@@ -1,0 +1,23 @@
+name = "brook"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[durable_objects]
+bindings = [
+  { name = "BROOK", class_name = "Brook" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Brook"]
+
+[triggers]
+crons = ["0 * * * *"]
+
+[vars]
+GITHUB_ORG = "your-github-org"
+FLEET_BRIDGE_REPO = "fleet-bridge"
+ALERT_THRESHOLD_COMMITS = "20"
+ALERT_THRESHOLD_FILES = "100"
+ALERT_THRESHOLD_REPOS = "2"
