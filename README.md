@@ -164,3 +164,11 @@ MIT
 ## Origin
 
 Built in one afternoon by a security architect who was running three AI agents and almost had a panic attack because none of them could find what he'd built that morning. The problem wasn't the tools. It was the architecture. Brook is the fix.
+
+---
+
+## Northwoods Sentinel Labs
+
+Part of the [Northwoods Sentinel Labs](https://northwoodssentinel.com) ecosystem — open-source tools for human-centered AI.
+
+[Blog](https://northwoodssentinel.com) · [Substack](https://substack.com/@chewvala) · [GitHub](https://github.com/NorthwoodsSentinel)
