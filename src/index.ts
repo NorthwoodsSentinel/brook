@@ -27,6 +27,41 @@ interface Env {
 const PUBLIC_PATHS = new Set(["/", "/daemon"]);
 // Everything else requires Bearer token
 
+// "The only way to do great work is to love what you do — and then defend it." — Henry Rollins
+const SECURITY_HEADERS: Record<string, string> = {
+  'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+  'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+};
+
+function escapeHtml(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function secureResponse(body: string, init?: ResponseInit): Response {
+  const headers = new Headers(init?.headers);
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
+    headers.set(k, v);
+  }
+  return new Response(body, { ...init, headers });
+}
+
+function secureJsonResponse(data: unknown, init?: ResponseInit): Response {
+  const headers = new Headers(init?.headers);
+  headers.set('Content-Type', 'application/json');
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
+    headers.set(k, v);
+  }
+  return new Response(JSON.stringify(data), { ...init, headers });
+}
+
+function truncate(str: string, max: number): string {
+  return str.length > max ? str.slice(0, max) : str;
+}
+
 interface Alert {
   id: string;
   ts: string;
@@ -330,7 +365,7 @@ export class Brook extends DurableObject<Env> {
       const authHeader = request.headers.get("Authorization") || "";
       const token = authHeader.replace("Bearer ", "");
       if (!this.env.BROOK_API_KEY || token !== this.env.BROOK_API_KEY) {
-        return Response.json(
+        return secureJsonResponse(
           { error: "Unauthorized. Bearer token required for private endpoints." },
           { status: 401 }
         );
@@ -343,7 +378,7 @@ export class Brook extends DurableObject<Env> {
     }
     if (path === "/check") {
       const result = await this.runCheck("manual");
-      return Response.json(result);
+      return secureJsonResponse(result);
     }
     if (path === "/alerts") {
       return this.handleAlerts(url);
@@ -352,13 +387,13 @@ export class Brook extends DurableObject<Env> {
       const id = url.searchParams.get("id");
       if (id) {
         this.ctx.storage.sql.exec("UPDATE alerts SET read = 1 WHERE id = ?", id);
-        return Response.json({ ok: true });
+        return secureJsonResponse({ ok: true });
       }
-      return Response.json({ error: "id required" }, { status: 400 });
+      return secureJsonResponse({ error: "id required" }, { status: 400 });
     }
     if (path === "/webhook") {
       const result = await this.runCheck("webhook");
-      return Response.json(result);
+      return secureJsonResponse(result);
     }
     if (path === "/checkin" && request.method === "POST") {
       return this.handleCheckin(request);
@@ -380,16 +415,16 @@ export class Brook extends DurableObject<Env> {
       const rows = this.ctx.storage.sql.exec(
         "SELECT * FROM checks ORDER BY ts DESC LIMIT 24"
       ).toArray();
-      return Response.json(rows);
+      return secureJsonResponse(rows);
     }
 
-    return Response.json({
+    return secureJsonResponse({
       name: "Brook — Fleet Overwatch",
       version: "0.1.0",
       public: ["/daemon"],
       private: ["/status", "/check", "/alerts", "/silence?id=X", "/webhook", "/history", "/fleet", "/checkin (POST)", "/checkout (POST)"],
       auth: "Bearer token required for private endpoints",
-    });
+    });  // "No dress rehearsal, this is our life" — Gord Downie
   }
 
   // ─── Cron handler ─────────────────────────────────────────────
@@ -401,14 +436,19 @@ export class Brook extends DurableObject<Env> {
   // ─── Fleet agent tracking ──────────────────────────────────────
 
   private async handleCheckin(request: Request): Promise<Response> {
-    const body = await request.json() as any;
-    const name = body.name;
-    const machine = body.machine || "unknown";
-    const workingOn = body.working_on || "";
-    const context = body.context || "";
-    const capabilities = body.capabilities || "";
+    let body: any;
+    try {
+      body = await request.json();
+    } catch {
+      return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    const name = truncate(String(body.name || ""), 128);
+    const machine = truncate(String(body.machine || "unknown"), 128);
+    const workingOn = truncate(String(body.working_on || ""), 1024);
+    const context = truncate(String(body.context || ""), 1024);
+    const capabilities = truncate(String(body.capabilities || ""), 1024);
 
-    if (!name) return Response.json({ error: "name required" }, { status: 400 });
+    if (!name) return secureJsonResponse({ error: "name required" }, { status: 400 });
 
     this.ctx.storage.sql.exec(
       `INSERT INTO agents (name, status, last_checkin, working_on, machine, context, capabilities)
@@ -423,17 +463,22 @@ export class Brook extends DurableObject<Env> {
       name, new Date().toISOString(), workingOn, machine, context, capabilities
     );
 
-    return Response.json({ ok: true, agent: name, status: "online" });
+    return secureJsonResponse({ ok: true, agent: name, status: "online" });
   }
 
   // Agents publish what they built — goes into the shared registry
   private async handlePublish(request: Request): Promise<Response> {
-    const body = await request.json() as any;
-    const agent = body.agent;
+    let body: any;
+    try {
+      body = await request.json();
+    } catch {
+      return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    const agent = truncate(String(body.agent || ""), 128);
     const items = body.items; // array of { what, location, status }
 
     if (!agent || !items || !Array.isArray(items)) {
-      return Response.json({ error: "agent and items[] required" }, { status: 400 });
+      return secureJsonResponse({ error: "agent and items[] required" }, { status: 400 });
     }
 
     const ts = new Date().toISOString();
@@ -445,7 +490,7 @@ export class Brook extends DurableObject<Env> {
       );
     }
 
-    return Response.json({ ok: true, agent, published: items.length });
+    return secureJsonResponse({ ok: true, agent, published: items.length });
   }
 
   // Query a specific agent's state and registry
@@ -455,7 +500,7 @@ export class Brook extends DurableObject<Env> {
     ).toArray();
 
     if (agent.length === 0) {
-      return Response.json({ error: `Agent '${name}' not found` }, { status: 404 });
+      return secureJsonResponse({ error: "Agent not found" }, { status: 404 });
     }
 
     const registry = this.ctx.storage.sql.exec(
@@ -470,7 +515,7 @@ export class Brook extends DurableObject<Env> {
     let displayStatus = a.status;
     if (a.status === "online" && hoursSince > 2) displayStatus = "stale";
 
-    return Response.json({
+    return secureJsonResponse({
       name: a.name,
       status: displayStatus,
       machine: a.machine,
@@ -485,17 +530,22 @@ export class Brook extends DurableObject<Env> {
   }
 
   private async handleCheckout(request: Request): Promise<Response> {
-    const body = await request.json() as any;
-    const name = body.name;
+    let body: any;
+    try {
+      body = await request.json();
+    } catch {
+      return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    const name = truncate(String(body.name || ""), 128);
 
-    if (!name) return Response.json({ error: "name required" }, { status: 400 });
+    if (!name) return secureJsonResponse({ error: "name required" }, { status: 400 });
 
     this.ctx.storage.sql.exec(
       `UPDATE agents SET status = 'offline', last_checkout = ? WHERE name = ?`,
       new Date().toISOString(), name
     );
 
-    return Response.json({ ok: true, agent: name, status: "offline" });
+    return secureJsonResponse({ ok: true, agent: name, status: "offline" });
   }
 
   private handleFleet(): Response {
@@ -513,7 +563,7 @@ export class Brook extends DurableObject<Env> {
       return { ...a, displayStatus, hoursSinceCheckin: Math.round(hoursSince * 10) / 10 };
     });
 
-    return Response.json({ agents: enriched });
+    return secureJsonResponse({ agents: enriched });
   }
 
   // ─── Per-agent public daemon page ───────────────────────────────
@@ -524,7 +574,7 @@ export class Brook extends DurableObject<Env> {
     ).toArray();
 
     if (agent.length === 0) {
-      return new Response(`Agent '${name}' not found`, { status: 404 });
+      return secureResponse("Agent not found", { status: 404 });
     }
 
     const registry = this.ctx.storage.sql.exec(
@@ -542,7 +592,7 @@ export class Brook extends DurableObject<Env> {
     const statusColor = displayStatus === "online" ? "#4a9" : displayStatus === "stale" ? "#ca4" : "#666";
 
     const registryRows = registry.map((r: any) =>
-      `<tr><td class="dim">${(r.ts || '').split('T')[0]}</td><td>${r.what}</td><td class="dim">${r.status}</td></tr>`
+      `<tr><td class="dim">${escapeHtml((r.ts || '').split('T')[0])}</td><td>${escapeHtml(r.what)}</td><td class="dim">${escapeHtml(r.status)}</td></tr>`
     ).join('\n      ');
 
     const html = `<!DOCTYPE html>
@@ -550,7 +600,7 @@ export class Brook extends DurableObject<Env> {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${a.name} — Fleet Agent</title>
+  <title>${escapeHtml(a.name)} — Fleet Agent</title>
   <style>
     body { font-family: 'Berkeley Mono', 'SF Mono', monospace; background: #0a0a0a; color: #c4a35a; max-width: 700px; margin: 40px auto; padding: 0 20px; line-height: 1.6; }
     h1 { color: #e8d5a3; font-size: 1.4em; border-bottom: 1px solid #2a2a2a; padding-bottom: 12px; }
@@ -566,12 +616,12 @@ export class Brook extends DurableObject<Env> {
   </style>
 </head>
 <body>
-  <h1>${a.name}</h1>
-  <p class="meta">Machine: ${a.machine || 'unknown'} · <span class="status">${displayStatus}</span> · Last checkin: ${hoursSince}h ago</p>
+  <h1>${escapeHtml(a.name)}</h1>
+  <p class="meta">Machine: ${escapeHtml(a.machine || 'unknown')} · <span class="status">${escapeHtml(displayStatus)}</span> · Last checkin: ${hoursSince}h ago</p>
 
-  ${a.working_on ? `<h2>Currently Working On</h2><p>${a.working_on}</p>` : ''}
-  ${a.context ? `<h2>Context</h2><p>${a.context}</p>` : ''}
-  ${a.capabilities ? `<h2>Capabilities</h2><p>${a.capabilities}</p>` : ''}
+  ${a.working_on ? `<h2>Currently Working On</h2><p>${escapeHtml(a.working_on)}</p>` : ''}
+  ${a.context ? `<h2>Context</h2><p>${escapeHtml(a.context)}</p>` : ''}
+  ${a.capabilities ? `<h2>Capabilities</h2><p>${escapeHtml(a.capabilities)}</p>` : ''}
 
   ${registry.length > 0 ? `
   <h2>Recently Built</h2>
@@ -586,7 +636,7 @@ export class Brook extends DurableObject<Env> {
 </body>
 </html>`;
 
-    return new Response(html, {
+    return secureResponse(html, {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   }
@@ -652,7 +702,7 @@ export class Brook extends DurableObject<Env> {
         let ds = a.status;
         if (ds === "online" && hrs > 2) ds = "stale";
         const sc = ds === "online" ? "#4a9" : ds === "stale" ? "#ca4" : "#666";
-        return `<tr><td><a href="/daemon/${a.name}">${a.name}</a></td><td style="color:${sc}">${ds}</td><td class="dim">${a.machine || ''}</td><td class="dim">${(a.working_on || '').substring(0, 80)}</td></tr>`;
+        return `<tr><td><a href="/daemon/${escapeHtml(a.name)}">${escapeHtml(a.name)}</a></td><td style="color:${sc}">${escapeHtml(ds)}</td><td class="dim">${escapeHtml(a.machine || '')}</td><td class="dim">${escapeHtml((a.working_on || '').substring(0, 80))}</td></tr>`;
       }).join('\n    ') + '</table>';
   })()}</div>
 
@@ -660,9 +710,9 @@ export class Brook extends DurableObject<Env> {
   <table>
     <tr><th>Repo</th><th>Visibility</th><th>Last Checked</th></tr>
     ${repos.map((r: any) => `<tr>
-      <td>${r.name}</td>
+      <td>${escapeHtml(r.name)}</td>
       <td class="${r.private ? 'private' : 'public'}">${r.private ? 'private' : 'public'}</td>
-      <td class="dim">${r.lastChecked || 'never'}</td>
+      <td class="dim">${escapeHtml(r.lastChecked || 'never')}</td>
     </tr>`).join('\n    ')}
   </table>
 
@@ -687,7 +737,7 @@ export class Brook extends DurableObject<Env> {
 </body>
 </html>`;
 
-    return new Response(html, {
+    return secureResponse(html, {
       headers: { "Content-Type": "text/html; charset=utf-8" },
     });
   }
@@ -710,7 +760,7 @@ export class Brook extends DurableObject<Env> {
       "SELECT * FROM alerts WHERE read = 0 ORDER BY ts DESC LIMIT 5"
     ).toArray();
 
-    return Response.json({
+    return secureJsonResponse({
       status: "awake",
       lastCheck,
       totalChecks: parseInt(totalChecks),
@@ -726,7 +776,7 @@ export class Brook extends DurableObject<Env> {
     const rows = this.ctx.storage.sql.exec(
       `SELECT * FROM alerts ${where} ORDER BY ts DESC LIMIT 50`
     ).toArray();
-    return Response.json(rows);
+    return secureJsonResponse(rows);
   }
 
   private makeAlert(type: Alert["type"], severity: Alert["severity"], message: string): Alert {
