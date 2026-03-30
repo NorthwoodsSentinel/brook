@@ -37,10 +37,6 @@ const SECURITY_HEADERS: Record<string, string> = {
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
 };
 
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 function secureResponse(body: string, init?: ResponseInit): Response {
   const headers = new Headers(init?.headers);
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
@@ -84,6 +80,10 @@ interface RegistryEntry {
   what: string;
   where: string;
   status: string;
+}
+
+function esc(s: string): string {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ─── Durable Object: Brook ───────────────────────────────────────
@@ -383,8 +383,9 @@ export class Brook extends DurableObject<Env> {
     if (path === "/alerts") {
       return this.handleAlerts(url);
     }
-    if (path === "/silence") {
-      const id = url.searchParams.get("id");
+    if (path === "/silence" && request.method === "POST") {
+      const body = await request.json() as any;
+      const id = body?.id;
       if (id) {
         this.ctx.storage.sql.exec("UPDATE alerts SET read = 1 WHERE id = ?", id);
         return secureJsonResponse({ ok: true });
@@ -592,7 +593,7 @@ export class Brook extends DurableObject<Env> {
     const statusColor = displayStatus === "online" ? "#4a9" : displayStatus === "stale" ? "#ca4" : "#666";
 
     const registryRows = registry.map((r: any) =>
-      `<tr><td class="dim">${escapeHtml((r.ts || '').split('T')[0])}</td><td>${escapeHtml(r.what)}</td><td class="dim">${escapeHtml(r.status)}</td></tr>`
+      `<tr><td class="dim">${esc((r.ts || '').split('T')[0])}</td><td>${esc(r.what || '')}</td><td class="dim">${esc(r.status || '')}</td></tr>`
     ).join('\n      ');
 
     const html = `<!DOCTYPE html>
@@ -600,7 +601,7 @@ export class Brook extends DurableObject<Env> {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(a.name)} — Fleet Agent</title>
+  <title>${esc(a.name)} — Fleet Agent</title>
   <style>
     body { font-family: 'Berkeley Mono', 'SF Mono', monospace; background: #0a0a0a; color: #c4a35a; max-width: 700px; margin: 40px auto; padding: 0 20px; line-height: 1.6; }
     h1 { color: #e8d5a3; font-size: 1.4em; border-bottom: 1px solid #2a2a2a; padding-bottom: 12px; }
@@ -616,12 +617,12 @@ export class Brook extends DurableObject<Env> {
   </style>
 </head>
 <body>
-  <h1>${escapeHtml(a.name)}</h1>
-  <p class="meta">Machine: ${escapeHtml(a.machine || 'unknown')} · <span class="status">${escapeHtml(displayStatus)}</span> · Last checkin: ${hoursSince}h ago</p>
+  <h1>${esc(a.name)}</h1>
+  <p class="meta">Machine: ${esc(a.machine || 'unknown')} · <span class="status">${esc(displayStatus)}</span> · Last checkin: ${hoursSince}h ago</p>
 
-  ${a.working_on ? `<h2>Currently Working On</h2><p>${escapeHtml(a.working_on)}</p>` : ''}
-  ${a.context ? `<h2>Context</h2><p>${escapeHtml(a.context)}</p>` : ''}
-  ${a.capabilities ? `<h2>Capabilities</h2><p>${escapeHtml(a.capabilities)}</p>` : ''}
+  ${a.working_on ? `<h2>Currently Working On</h2><p>${esc(a.working_on)}</p>` : ''}
+  ${a.context ? `<h2>Context</h2><p>${esc(a.context)}</p>` : ''}
+  ${a.capabilities ? `<h2>Capabilities</h2><p>${esc(a.capabilities)}</p>` : ''}
 
   ${registry.length > 0 ? `
   <h2>Recently Built</h2>
@@ -702,7 +703,7 @@ export class Brook extends DurableObject<Env> {
         let ds = a.status;
         if (ds === "online" && hrs > 2) ds = "stale";
         const sc = ds === "online" ? "#4a9" : ds === "stale" ? "#ca4" : "#666";
-        return `<tr><td><a href="/daemon/${escapeHtml(a.name)}">${escapeHtml(a.name)}</a></td><td style="color:${sc}">${escapeHtml(ds)}</td><td class="dim">${escapeHtml(a.machine || '')}</td><td class="dim">${escapeHtml((a.working_on || '').substring(0, 80))}</td></tr>`;
+        return `<tr><td><a href="/daemon/${encodeURIComponent(a.name)}">${esc(a.name)}</a></td><td style="color:${sc}">${esc(ds)}</td><td class="dim">${esc(a.machine || '')}</td><td class="dim">${esc((a.working_on || '').substring(0, 80))}</td></tr>`;
       }).join('\n    ') + '</table>';
   })()}</div>
 
@@ -710,9 +711,9 @@ export class Brook extends DurableObject<Env> {
   <table>
     <tr><th>Repo</th><th>Visibility</th><th>Last Checked</th></tr>
     ${repos.map((r: any) => `<tr>
-      <td>${escapeHtml(r.name)}</td>
+      <td>${esc(r.name)}</td>
       <td class="${r.private ? 'private' : 'public'}">${r.private ? 'private' : 'public'}</td>
-      <td class="dim">${escapeHtml(r.lastChecked || 'never')}</td>
+      <td class="dim">${esc(r.lastChecked || 'never')}</td>
     </tr>`).join('\n    ')}
   </table>
 
