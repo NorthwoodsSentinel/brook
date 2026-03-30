@@ -27,6 +27,50 @@ interface Env {
 const PUBLIC_PATHS = new Set(["/", "/daemon"]);
 // Everything else requires Bearer token
 
+// ─── Field length limits ────────────────────────────────────────
+const FIELD_LIMITS = {
+  name: 64,
+  machine: 64,
+  working_on: 500,
+  context: 2000,
+  capabilities: 2000,
+} as const;
+
+const MAX_BODY_BYTES = 64 * 1024; // 64KB
+
+// ─── Rate limiting ──────────────────────────────────────────────
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+const checkRateLimitMap = new Map<string, number>(); // IP -> last /check timestamp
+
+function isRateLimited(ip: string, path: string): boolean {
+  const now = Date.now();
+
+  // /check endpoint: 1 per 60 seconds
+  if (path === "/check") {
+    const last = checkRateLimitMap.get(ip) || 0;
+    if (now - last < 60_000) return true;
+    checkRateLimitMap.set(ip, now);
+    return false;
+  }
+
+  // All other authenticated endpoints: 60/min/IP
+  let bucket = rateLimitMap.get(ip);
+  if (!bucket || now > bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + 60_000 };
+    rateLimitMap.set(ip, bucket);
+  }
+  bucket.count++;
+  return bucket.count > 60;
+}
+
+function rejectOversizedBody(request: Request): Response | null {
+  const cl = request.headers.get("Content-Length");
+  if (cl && parseInt(cl, 10) > MAX_BODY_BYTES) {
+    return secureJsonResponse({ error: "Request body too large (64KB max)" }, { status: 413 });
+  }
+  return null;
+}
+
 // "The only way to do great work is to love what you do — and then defend it." — Henry Rollins
 const SECURITY_HEADERS: Record<string, string> = {
   'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
@@ -277,7 +321,7 @@ export class Brook extends DurableObject<Env> {
 
     try {
       const regRes = await fetch(
-        `https://raw.githubusercontent.com/${org}/${this.env.FLEET_BRIDGE_REPO}/main/registry/2026-03-24.md`,
+        `https://raw.githubusercontent.com/${org}/${this.env.FLEET_BRIDGE_REPO}/main/registry/${new Date().toISOString().split('T')[0]}.md`,
         { headers }
       );
       if (regRes.ok) {
@@ -384,10 +428,15 @@ export class Brook extends DurableObject<Env> {
       return this.handleAlerts(url);
     }
     if (path === "/silence" && request.method === "POST") {
-      const body = await request.json() as any;
+      let body: any;
+      try {
+        body = await request.json();
+      } catch {
+        return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+      }
       const id = body?.id;
       if (id) {
-        this.ctx.storage.sql.exec("UPDATE alerts SET read = 1 WHERE id = ?", id);
+        this.ctx.storage.sql.exec("UPDATE alerts SET read = 1 WHERE id = ?", truncate(String(id), FIELD_LIMITS.name));
         return secureJsonResponse({ ok: true });
       }
       return secureJsonResponse({ error: "id required" }, { status: 400 });
@@ -443,11 +492,11 @@ export class Brook extends DurableObject<Env> {
     } catch {
       return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
     }
-    const name = truncate(String(body.name || ""), 128);
-    const machine = truncate(String(body.machine || "unknown"), 128);
-    const workingOn = truncate(String(body.working_on || ""), 1024);
-    const context = truncate(String(body.context || ""), 1024);
-    const capabilities = truncate(String(body.capabilities || ""), 1024);
+    const name = truncate(String(body.name || ""), FIELD_LIMITS.name);
+    const machine = truncate(String(body.machine || "unknown"), FIELD_LIMITS.machine);
+    const workingOn = truncate(String(body.working_on || ""), FIELD_LIMITS.working_on);
+    const context = truncate(String(body.context || ""), FIELD_LIMITS.context);
+    const capabilities = truncate(String(body.capabilities || ""), FIELD_LIMITS.capabilities);
 
     if (!name) return secureJsonResponse({ error: "name required" }, { status: 400 });
 
@@ -475,7 +524,7 @@ export class Brook extends DurableObject<Env> {
     } catch {
       return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
     }
-    const agent = truncate(String(body.agent || ""), 128);
+    const agent = truncate(String(body.agent || ""), FIELD_LIMITS.name);
     const items = body.items; // array of { what, location, status }
 
     if (!agent || !items || !Array.isArray(items)) {
@@ -487,7 +536,10 @@ export class Brook extends DurableObject<Env> {
       this.ctx.storage.sql.exec(
         `INSERT INTO agent_registry (agent, ts, what, location, status)
          VALUES (?, ?, ?, ?, ?)`,
-        agent, ts, item.what || "", item.location || "", item.status || ""
+        agent, ts,
+        truncate(String(item.what || ""), FIELD_LIMITS.working_on),
+        truncate(String(item.location || ""), FIELD_LIMITS.working_on),
+        truncate(String(item.status || ""), FIELD_LIMITS.machine)
       );
     }
 
@@ -537,7 +589,7 @@ export class Brook extends DurableObject<Env> {
     } catch {
       return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
     }
-    const name = truncate(String(body.name || ""), 128);
+    const name = truncate(String(body.name || ""), FIELD_LIMITS.name);
 
     if (!name) return secureJsonResponse({ error: "name required" }, { status: 400 });
 
@@ -810,6 +862,22 @@ export class Brook extends DurableObject<Env> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+
+    // Rate limit on authenticated endpoints only
+    if (!PUBLIC_PATHS.has(url.pathname) && !url.pathname.startsWith("/daemon/")) {
+      if (isRateLimited(ip, url.pathname)) {
+        return secureJsonResponse({ error: "Rate limited. Try again later." }, { status: 429 });
+      }
+    }
+
+    // Body size gate for POST requests
+    if (request.method === "POST") {
+      const rejection = rejectOversizedBody(request);
+      if (rejection) return rejection;
+    }
+
     const id = env.BROOK.idFromName("brook-singleton");
     const stub = env.BROOK.get(id);
     return stub.fetch(request);
