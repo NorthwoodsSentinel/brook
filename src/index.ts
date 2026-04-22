@@ -182,6 +182,12 @@ export class Brook extends DurableObject<Env> {
         status TEXT DEFAULT ''
       );
     `);
+    // Fleet telemetry
+    try {
+      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS fleet_sessions (agent TEXT PRIMARY KEY, status TEXT DEFAULT 'offline', query_count INTEGER DEFAULT 0, domains TEXT DEFAULT '', first_seen TEXT, last_seen TEXT, session_start TEXT, is_local INTEGER DEFAULT 0)`);
+    } catch (e) {
+      // Table may already exist or have schema mismatch — safe to continue
+    }
     // Migrate existing agents table if missing new columns
     try { this.ctx.storage.sql.exec(`ALTER TABLE agents ADD COLUMN context TEXT DEFAULT ''`); } catch {}
     try { this.ctx.storage.sql.exec(`ALTER TABLE agents ADD COLUMN capabilities TEXT DEFAULT ''`); } catch {}
@@ -461,6 +467,12 @@ export class Brook extends DurableObject<Env> {
       const agentName = path.split("/")[2];
       if (agentName) return this.handleAgentQuery(agentName);
     }
+    if (path === "/fleet-telemetry" && request.method === "POST") {
+      return this.handleFleetTelemetry(request);
+    }
+    if (path === "/fleet-telemetry" && request.method === "GET") {
+      return this.handleFleetTelemetryRead();
+    }
     if (path === "/history") {
       const rows = this.ctx.storage.sql.exec(
         "SELECT * FROM checks ORDER BY ts DESC LIMIT 24"
@@ -472,7 +484,7 @@ export class Brook extends DurableObject<Env> {
       name: "Brook — Fleet Overwatch",
       version: "0.1.0",
       public: ["/daemon"],
-      private: ["/status", "/check", "/alerts", "/silence?id=X", "/webhook", "/history", "/fleet", "/checkin (POST)", "/checkout (POST)"],
+      private: ["/status", "/check", "/alerts", "/silence?id=X", "/webhook", "/history", "/fleet", "/fleet-telemetry (GET/POST)", "/checkin (POST)", "/checkout (POST)"],
       auth: "Bearer token required for private endpoints",
     });  // "No dress rehearsal, this is our life" — Gord Downie
   }
@@ -759,6 +771,61 @@ export class Brook extends DurableObject<Env> {
       }).join('\n    ') + '</table>';
   })()}</div>
 
+  <h2>Fleet Telemetry</h2>
+  <div id="fleet-telemetry">${(() => {
+    let ftSessions: any[];
+    try {
+      ftSessions = this.ctx.storage.sql.exec(
+        "SELECT * FROM fleet_sessions ORDER BY last_seen DESC"
+      ).toArray();
+    } catch {
+      return '<p class="dim">Fleet telemetry table initializing...</p>';
+    }
+    if (ftSessions.length === 0) return '<p class="dim">No fleet telemetry data yet. Poller will populate this.</p>';
+
+    const now = Date.now();
+    const activeNames: string[] = [];
+
+    const rows = ftSessions.map((s: any) => {
+      const lastSeen = s.last_seen ? new Date(s.last_seen).getTime() : 0;
+      const sessionStart = s.session_start ? new Date(s.session_start).getTime() : lastSeen;
+      const durationMin = Math.round((lastSeen - sessionStart) / 60000);
+      const idleMin = Math.round((now - lastSeen) / 60000);
+      let status = s.status;
+      if (status === "active" && idleMin > 10) status = "idle";
+      if (status === "active") activeNames.push(s.agent);
+
+      const statusColor = status === "active" ? "#4a9" : status === "idle" ? "#ca4" : "#666";
+      const indicator = status === "active" ? "●" : status === "idle" ? "◐" : "○";
+      const localBadge = s.is_local === 1 ? ' <span style="color:#666;font-size:0.75em">LOCAL</span>' : '';
+      const durationStr = status === "active" ? `${durationMin}m active` : `idle ${idleMin}m`;
+
+      return `<tr>
+        <td><span style="color:${statusColor}">${indicator}</span> ${esc(s.agent)}${localBadge}</td>
+        <td style="color:${statusColor}">${esc(status)}</td>
+        <td class="dim">${durationStr}</td>
+        <td class="dim">${s.query_count || 0} queries</td>
+      </tr>`;
+    }).join('\n      ');
+
+    // Cognitive mode
+    let mode = "idle";
+    if (activeNames.includes("Gemini") || activeNames.includes("Mirror")) mode = "generative";
+    if (activeNames.includes("Leroy") || activeNames.includes("Leroy-API")) {
+      mode = (activeNames.includes("Gemini") || activeNames.includes("Mirror")) ? "split-screen ◆" : "analytical";
+    }
+    if (activeNames.includes("CeeCee")) {
+      mode = activeNames.includes("Leroy") ? "split-screen ◆" : "build";
+    }
+    const modeColor = mode.includes("split") ? "#c4a35a" : mode === "generative" ? "#4a9" : mode === "analytical" ? "#69b" : "#666";
+
+    return `<p style="margin-bottom:12px">Cognitive Mode: <span style="color:${modeColor};font-weight:bold">${mode.toUpperCase()}</span></p>
+    <table>
+      <tr><th>Agent</th><th>Status</th><th>Duration</th><th>Queries</th></tr>
+      ${rows}
+    </table>`;
+  })()}</div>
+
   <h2>Monitored Repositories (${repos.length})</h2>
   <table>
     <tr><th>Repo</th><th>Visibility</th><th>Last Checked</th></tr>
@@ -792,6 +859,142 @@ export class Brook extends DurableObject<Env> {
 
     return secureResponse(html, {
       headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  }
+
+  // ─── Fleet Telemetry ──────────────────────────────────────────
+
+  private async handleFleetTelemetry(request: Request): Promise<Response> {
+    let body: any;
+    try {
+      body = await request.json();
+    } catch {
+      return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    const sessions = body?.sessions;
+    if (!sessions || !Array.isArray(sessions)) {
+      return secureJsonResponse({ error: "sessions[] required" }, { status: 400 });
+    }
+
+    const now = new Date().toISOString();
+    const IDLE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+
+    for (const s of sessions) {
+      const agent = truncate(String(s.agent || ""), FIELD_LIMITS.name);
+      if (!agent) continue;
+
+      const queryCount = Math.min(Number(s.query_count) || 0, 999999);
+      const domains = truncate(String(Array.isArray(s.domains) ? s.domains.join(",") : ""), FIELD_LIMITS.working_on);
+      const isLocal = s.local ? 1 : 0;
+
+      // Check if there's an existing session
+      const existing = this.ctx.storage.sql.exec(
+        "SELECT session_start, status, first_seen FROM fleet_sessions WHERE agent = ?", agent
+      ).toArray();
+
+      const hasExisting = existing.length > 0;
+      const wasActive = hasExisting && (existing[0] as any).status === "active";
+      const sessionStart = wasActive ? (existing[0] as any).session_start : now;
+      const firstSeen = hasExisting ? (existing[0] as any).first_seen : now;
+
+      if (hasExisting) {
+        this.ctx.storage.sql.exec(
+          `UPDATE fleet_sessions SET
+            status = 'active',
+            query_count = ?,
+            domains = ?,
+            last_seen = ?,
+            session_start = ?,
+            is_local = ?
+           WHERE agent = ?`,
+          queryCount, domains, now, sessionStart, isLocal, agent
+        );
+      } else {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO fleet_sessions (agent, status, query_count, domains, first_seen, last_seen, session_start, is_local)
+           VALUES (?, 'active', ?, ?, ?, ?, ?, ?)`,
+          agent, queryCount, domains, now, now, now, isLocal
+        );
+      }
+    }
+
+    // Mark sessions idle if not updated in this batch
+    const activeAgents = sessions.map((s: any) => String(s.agent || ""));
+    const allSessions = this.ctx.storage.sql.exec(
+      "SELECT agent, last_seen FROM fleet_sessions WHERE status = 'active'"
+    ).toArray();
+
+    for (const row of allSessions) {
+      const a = row as any;
+      if (!activeAgents.includes(a.agent)) {
+        const lastSeen = new Date(a.last_seen).getTime();
+        if (Date.now() - lastSeen > IDLE_THRESHOLD_MS) {
+          this.ctx.storage.sql.exec(
+            "UPDATE fleet_sessions SET status = 'idle' WHERE agent = ?", a.agent
+          );
+        }
+      }
+    }
+
+    return secureJsonResponse({ ok: true, updated: sessions.length });
+  }
+
+  private handleFleetTelemetryRead(): Response {
+    let sessions: any[];
+    try {
+      sessions = this.ctx.storage.sql.exec(
+        "SELECT * FROM fleet_sessions ORDER BY last_seen DESC"
+      ).toArray();
+    } catch {
+      return secureJsonResponse({ sessions: [], cognitive_mode: "idle", active_count: 0, error: "table_initializing" });
+    }
+
+    // Compute durations and cognitive mode
+    const now = Date.now();
+    const enriched = sessions.map((s: any) => {
+      const lastSeen = s.last_seen ? new Date(s.last_seen).getTime() : 0;
+      const sessionStart = s.session_start ? new Date(s.session_start).getTime() : lastSeen;
+      const durationMin = Math.round((lastSeen - sessionStart) / 60000);
+      const idleMin = Math.round((now - lastSeen) / 60000);
+
+      // Auto-idle if last seen > 10 minutes ago
+      let status = s.status;
+      if (status === "active" && idleMin > 10) status = "idle";
+
+      return {
+        agent: s.agent,
+        status,
+        query_count: s.query_count,
+        domains: s.domains,
+        session_duration_min: durationMin,
+        idle_min: idleMin,
+        last_seen: s.last_seen,
+        session_start: s.session_start,
+        is_local: s.is_local === 1,
+      };
+    });
+
+    // Determine cognitive mode based on active sessions
+    const active = enriched.filter((s: any) => s.status === "active");
+    const activeNames = active.map((s: any) => s.agent);
+    let cognitiveMode = "idle";
+    if (activeNames.includes("Gemini") || activeNames.includes("Mirror")) {
+      cognitiveMode = "generative";
+    }
+    if (activeNames.includes("Leroy") || activeNames.includes("Leroy-API")) {
+      cognitiveMode = activeNames.includes("Gemini") || activeNames.includes("Mirror")
+        ? "split-screen" : "analytical";
+    }
+    if (activeNames.includes("CeeCee")) {
+      cognitiveMode = activeNames.includes("Leroy") ? "split-screen" : "build";
+    }
+
+    return secureJsonResponse({
+      sessions: enriched,
+      cognitive_mode: cognitiveMode,
+      active_count: active.length,
+      timestamp: new Date().toISOString(),
     });
   }
 
@@ -886,6 +1089,9 @@ export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     const id = env.BROOK.idFromName("brook-singleton");
     const stub = env.BROOK.get(id);
-    ctx.waitUntil(stub.fetch(new Request("https://brook/check")));
+    const req = new Request("https://brook/check", {
+      headers: { Authorization: `Bearer ${env.BROOK_API_KEY}` },
+    });
+    ctx.waitUntil(stub.fetch(req));
   },
 };
