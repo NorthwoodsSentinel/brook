@@ -19,11 +19,21 @@ When something needs your attention, Brook knows. When an agent needs to know wh
 - **Agent status** — who's online, what they're working on, when they last checked in
 - **Drift** — if no agent has updated in 24 hours, something's wrong
 
+## Doctrine
+
+> Brook refuses fabrication. Brook surfaces divergence. Brook does not instruct.
+
+Ratified 2026-06-03 by a 5-voice fleet powwow on Brook role expansion. Replaced the prior "observer only" line.
+
+- **Refuses fabrication** — validates writes through its surface; rejects malformed receipts, malformed pattern proposals, and pattern changes predicted to FP-storm against history. Bad data literally cannot land in the canonical store.
+- **Surfaces divergence** — makes fleet disagreement legible without arbitrating it. Voice-drift is information; smoothing it would be the actual harm. The `/divergence` endpoint never returns a `consensus_winner`.
+- **Does NOT instruct** — never issues commands to fleet members. Can refuse its own writes, throttle/revoke its own authorizations, notify via side-channels. If Brook itself is compromised, instances honor a Signal side-channel manual override Brook does not know about.
+
 ## What it does NOT do
 
-- No AI inference. Pure logic — thresholds, diffs, pattern matching.
-- No content judgment. Tracks activity, not meaning.
-- No action. Observer only. Never pushes code or instructs agents.
+- No AI inference. Pure logic — thresholds, diffs, pattern matching, schema validation.
+- No content judgment. Tracks activity and structural shape, not meaning.
+- No instruction. Refuses bad data at its own surface; never tells fleet members what to do.
 
 ## Architecture
 

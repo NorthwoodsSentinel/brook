@@ -5,9 +5,28 @@
  * Durable Object on Cloudflare that wakes hourly or on webhook,
  * checks fleet health, logs state, alerts on anomalies, and goes back to sleep.
  *
- * Watches: GitHub repos, fleet-bridge registry, agent drift
- * Does NOT: run inference, modify files, instruct agents
- * Observer only.
+ * Doctrine (ratified 2026-06-03 by 5-voice fleet powwow on Brook role expansion):
+ *
+ *   Brook refuses fabrication.
+ *   Brook surfaces divergence.
+ *   Brook does not instruct.
+ *
+ * Watches: GitHub repos, fleet-bridge registry, agent drift. v0.2+ adds receipt
+ * discipline (/receipts), pattern bank integrity (/patterns + /patterns/test
+ * with predicted-FP gate), hook-error sink (/hook-errors), divergence surface
+ * (/divergence — no consensus_winner field, ever).
+ *
+ * Refuses fabrication: validates writes through its surface; rejects malformed
+ * receipts, malformed pattern proposals, and pattern changes predicted to
+ * FP-storm. Bad data literally cannot land.
+ *
+ * Surfaces divergence: makes fleet disagreement legible without arbitrating it.
+ * Voice-drift is information, not noise; smoothing it would be the actual harm.
+ *
+ * Does NOT instruct: never issues commands to fleet members. Can refuse its own
+ * writes, throttle/revoke its own authorizations, notify via side-channels.
+ * Never says "do X" to another agent. If Brook itself is compromised, instances
+ * honor a Signal side-channel manual override that Brook does not know about.
  */
 
 import { DurableObject } from "cloudflare:workers";
@@ -749,7 +768,7 @@ export class Brook extends DurableObject<Env> {
 </head>
 <body>
   <h1>Brook — Fleet Overwatch</h1>
-  <p class="dim">A sleeping guardian for your AI fleet. Wakes hourly. Watches git, fleet-bridge, drift. Observer only.</p>
+  <p class="dim">A sleeping guardian for your AI fleet. Wakes hourly. Watches git, fleet-bridge, drift, receipt discipline, pattern integrity. Refuses fabrication. Surfaces divergence. Does not instruct.</p>
 
   <h2>Status</h2>
   <p><span class="status">Operational</span> · Last check: ${lastCheck} · Total checks: ${totalChecks} · Unread alerts: ${(unreadCount[0] as any)?.count || 0}</p>
@@ -844,11 +863,13 @@ export class Brook extends DurableObject<Env> {
     <li>Agent fragmentation signals</li>
   </ul>
 
-  <h2>What Brook Does Not Do</h2>
+  <h2>Doctrine</h2>
+  <p><strong>Brook refuses fabrication. Brook surfaces divergence. Brook does not instruct.</strong></p>
+  <p class="dim">Ratified 2026-06-03 by 5-voice fleet powwow on Brook role expansion. Replaced the prior &quot;observer only&quot; line.</p>
   <ul>
-    <li>No AI inference. Pure logic.</li>
-    <li>No content judgment. Tracks activity, not meaning.</li>
-    <li>No action. Observer only. Never pushes code or instructs agents.</li>
+    <li><strong>Refuses fabrication</strong> — validates writes through its surface; rejects malformed receipts, malformed pattern proposals, and pattern changes predicted to FP-storm against history.</li>
+    <li><strong>Surfaces divergence</strong> — makes fleet disagreement legible without arbitrating it. The /divergence endpoint never returns a consensus_winner.</li>
+    <li><strong>Does NOT instruct</strong> — never issues commands to fleet members. No AI inference, no content judgment, no &quot;do X&quot; to another agent.</li>
   </ul>
 
   <div class="footer">
