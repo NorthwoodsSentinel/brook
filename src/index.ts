@@ -43,8 +43,121 @@ interface Env {
 }
 
 // Public endpoints — no auth required
-const PUBLIC_PATHS = new Set(["/", "/daemon"]);
+const PUBLIC_PATHS = new Set(["/", "/daemon", "/schemas"]);
+// Public prefixes — also no auth required (covers /daemon/<agent>, /schemas/<slug>)
+const PUBLIC_PREFIXES = ["/daemon/", "/schemas/"];
 // Everything else requires Bearer token
+
+// ─── Self-describing telemetry schema catalog ───────────────────
+// Added 2026-06-27 per [[principle_implicit_contracts_underdeliver_2026_06_27]] —
+// new fleet members should be able to ask Brook what shape it accepts
+// rather than reading source. Public on purpose: discovery is the point.
+interface BrookSchemaField {
+  type: string;
+  required: boolean;
+  notes?: string;
+  enum?: string[];
+}
+
+interface BrookSchemaEntry {
+  slug: string;
+  endpoint: string;
+  description: string;
+  auth: string;
+  body?: Record<string, BrookSchemaField>;
+  notes?: string[];
+}
+
+const BROOK_SCHEMA_CATALOG: Record<string, BrookSchemaEntry> = {
+  fleet_telemetry_post: {
+    slug: "fleet_telemetry_post",
+    endpoint: "POST /fleet-telemetry",
+    description: "Push per-agent session telemetry. Brook tracks active/idle/seen status keyed by agent name.",
+    auth: "Bearer token",
+    body: {
+      sessions: {
+        type: "array<object>",
+        required: true,
+        notes: "Each session: {agent: string, query_count: number, domains: string[] (joined CSV), local: boolean}",
+      },
+    },
+    notes: [
+      "Sessions not updated within 10 minutes get marked idle automatically.",
+      "Doctrine: Brook refuses fabrication — malformed sessions get rejected, not coerced.",
+    ],
+  },
+  checkin_post: {
+    slug: "checkin_post",
+    endpoint: "POST /checkin",
+    description: "Agent declares itself active and currently working on something.",
+    auth: "Bearer token",
+    body: {
+      name: { type: "string", required: true, notes: "Agent identifier" },
+      machine: { type: "string", required: false, notes: "Host machine identifier" },
+      working_on: { type: "string", required: false, notes: "Free-text current focus" },
+      context: { type: "string", required: false, notes: "Additional context" },
+      capabilities: { type: "string", required: false, notes: "Comma-separated capability list" },
+    },
+  },
+  checkout_post: {
+    slug: "checkout_post",
+    endpoint: "POST /checkout",
+    description: "Agent declares it's stepping away or finishing a session.",
+    auth: "Bearer token",
+    body: {
+      name: { type: "string", required: true, notes: "Agent identifier (same as checkin)" },
+    },
+  },
+  publish_post: {
+    slug: "publish_post",
+    endpoint: "POST /publish",
+    description: "Agent publishes an event or observation to the fleet feed.",
+    auth: "Bearer token",
+    body: {
+      agent: { type: "string", required: true, notes: "Publishing agent name" },
+    },
+    notes: ["Full body shape varies by event type — additional fields are stored on the event row."],
+  },
+  silence_post: {
+    slug: "silence_post",
+    endpoint: "POST /silence",
+    description: "Mark an alert as read/silenced.",
+    auth: "Bearer token",
+    body: {
+      id: { type: "string", required: true, notes: "Alert ID to silence" },
+    },
+  },
+};
+
+function brookSchemasResponse(slug?: string): Response {
+  if (!slug) {
+    const list = Object.values(BROOK_SCHEMA_CATALOG).map((s) => ({
+      slug: s.slug,
+      endpoint: s.endpoint,
+      description: s.description,
+    }));
+    return new Response(JSON.stringify({
+      ok: true,
+      data: {
+        schemas: list,
+        doc: "GET /schemas/:slug for full body shape per endpoint",
+      },
+    }), { headers: { "content-type": "application/json" } });
+  }
+  const entry = BROOK_SCHEMA_CATALOG[slug];
+  if (!entry) {
+    return new Response(JSON.stringify({
+      ok: false,
+      error: {
+        code: "NOT_FOUND",
+        message: `No schema for '${slug}'. Available: ${Object.keys(BROOK_SCHEMA_CATALOG).join(", ")}`,
+      },
+    }), { status: 404, headers: { "content-type": "application/json" } });
+  }
+  return new Response(JSON.stringify({ ok: true, data: { schema: entry } }), {
+    headers: { "content-type": "application/json" },
+  });
+}
 
 // ─── Field length limits ────────────────────────────────────────
 const FIELD_LIMITS = {
@@ -428,14 +541,23 @@ export class Brook extends DurableObject<Env> {
       const agentName = path.split("/")[2];
       if (agentName) return this.handleAgentDaemon(agentName);
     }
+    // Self-describing schema catalog — public per implicit-contracts-underdeliver doctrine
+    if (path === "/schemas") {
+      return brookSchemasResponse();
+    }
+    if (path.startsWith("/schemas/")) {
+      const slug = path.split("/")[2];
+      return brookSchemasResponse(slug);
+    }
 
     // ─── Auth gate for private endpoints ──────────────────────
-    if (!PUBLIC_PATHS.has(path)) {
+    const isPublicPrefix = PUBLIC_PREFIXES.some((p) => path.startsWith(p));
+    if (!PUBLIC_PATHS.has(path) && !isPublicPrefix) {
       const authHeader = request.headers.get("Authorization") || "";
       const token = authHeader.replace("Bearer ", "");
       if (!this.env.BROOK_API_KEY || token !== this.env.BROOK_API_KEY) {
         return secureJsonResponse(
-          { error: "Unauthorized. Bearer token required for private endpoints." },
+          { error: "Unauthorized. Bearer token required for private endpoints. Schema discovery at GET /schemas (public)." },
           { status: 401 }
         );
       }
