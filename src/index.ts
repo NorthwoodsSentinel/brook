@@ -1210,6 +1210,24 @@ export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     const id = env.BROOK.idFromName("brook-singleton");
     const stub = env.BROOK.get(id);
-    ctx.waitUntil(stub.fetch(new Request("https://neversink/check")));
+    // /check is not in PUBLIC_PATHS, so the DO's own auth gate rejects an
+    // unauthenticated cron call. Without this header the hourly check 401s and
+    // ctx.waitUntil() discards the response — the worker reports "awake" while
+    // nothing has actually checked since 2026-08-06.
+    ctx.waitUntil(
+      (async () => {
+        const res = await stub.fetch(
+          new Request("https://neversink/check", {
+            headers: { Authorization: `Bearer ${env.BROOK_API_KEY}` },
+          })
+        );
+        // Throw rather than return quietly: an unhandled rejection inside
+        // waitUntil surfaces in Workers logs and error analytics, where a
+        // discarded 401 response surfaces nowhere.
+        if (!res.ok) {
+          throw new Error(`brook cron /check failed: HTTP ${res.status}`);
+        }
+      })()
+    );
   },
 };
