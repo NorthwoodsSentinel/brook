@@ -3,9 +3,6 @@ main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
 
-[observability]
-enabled = true
-
 [durable_objects]
 bindings = [
   { name = "BROOK", class_name = "Brook" }
