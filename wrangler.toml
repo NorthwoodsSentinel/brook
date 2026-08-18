@@ -21,3 +21,8 @@ FLEET_BRIDGE_REPO = "fleet-bridge"
 ALERT_THRESHOLD_COMMITS = "20"
 ALERT_THRESHOLD_FILES = "100"
 ALERT_THRESHOLD_REPOS = "2"
+
+# Explicit so a redeploy can never dark this worker (T-265, 2026-08-18): Workers Logs on, full sampling.
+[observability]
+enabled = true
+head_sampling_rate = 1
