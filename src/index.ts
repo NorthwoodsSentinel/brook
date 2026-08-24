@@ -428,7 +428,16 @@ export class Brook extends DurableObject<Env> {
           `https://api.github.com/repos/${org}/${repo.name}/commits?since=${lastCheck}&per_page=50`,
           { headers }
         );
-        if (!commitsRes.ok) continue;
+        if (!commitsRes.ok) {
+          // 2026-08-24: an EMPTY repo answers 409 here. Skipping it meant it was never written to `repos`,
+          // so it was re-announced as "new" on every cycle (swarm-poc / soma-tirekick, Rob's spikes).
+          // A repo we have SEEN is known, whether or not it has commits yet.
+          this.ctx.storage.sql.exec(
+            `INSERT OR IGNORE INTO repos (name, last_commit_sha, last_checked, is_private) VALUES (?, '', ?, ?)`,
+            repo.name, new Date().toISOString(), repo.private ? 1 : 0
+          );
+          continue;
+        }
         const commits = await commitsRes.json() as any[];
 
         if (commits.length > 0) {
