@@ -87,7 +87,7 @@ Ratified 2026-06-03 by a 5-voice fleet powwow on Brook role expansion. Replaced 
 ### Prerequisites
 - Cloudflare account (free tier works)
 - GitHub personal access token (classic, `repo` + `read:org` scope)
-- Node.js + npm
+- Node.js 22 or newer + npm (Wrangler 4.156 requires Node 22)
 
 ### Steps
 
