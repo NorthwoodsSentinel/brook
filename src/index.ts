@@ -403,6 +403,20 @@ export class Brook extends DurableObject<Env> {
     };
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
+    // kintsugi: per-repo failures used to vanish (continue / empty catch), so a scan that hit the
+    // subrequest limit still looked complete. Count them, cap fetches to a budget, and say so.
+    // kintsugi: an unparseable budget (NaN) silently stopped binding; validate and fall back loudly.
+    let budget = Number(this.env.SUBREQUEST_BUDGET ?? "45");
+    if (!Number.isInteger(budget) || budget < POST_SCAN_CALLS + 1 || budget > 1000) {
+      newAlerts.push(this.makeAlert("git", "warn", `SUBREQUEST_BUDGET "${this.env.SUBREQUEST_BUDGET}" invalid; using 45`));
+      budget = 45;
+    }
+    // kintsugi: the budget counts the listing pages too (the audit found it started after them). Default 45 leaves
+    // headroom under Free's 50 for the few post-scan calls (fleet bridge, registry).
+    // kintsugi (NOR-245 fix-once): the fleet-bridge and registry calls ran outside the budget (45 could become 47).
+    // Reserve them up front so SUBREQUEST_BUDGET caps every subrequest this check makes.
+    const scanBudget = budget - POST_SCAN_CALLS;
+    // kintsugi (NOR-251): the budget is parsed BEFORE the listing so the listing pages are capped by it too.
     let repos: any[] = [];
     let listingTruncated = false;
     let listingFailed = false;
@@ -410,14 +424,18 @@ export class Brook extends DurableObject<Env> {
     try {
       // Try org endpoint first, fall back to user repos filtered by org.
       // NOR-236: follow every page (GitHub caps a page at 100); before this, Brook saw only page 1.
-      const org1 = await fetchAllPages(`https://api.github.com/orgs/${org}/repos?per_page=100&sort=updated`, headers);
+      const org1 = await fetchAllPages(`https://api.github.com/orgs/${org}/repos?per_page=100&sort=updated`, headers, fetch, scanBudget);
       listingPages += org1.pages;
       if (org1.ok) {
         repos = org1.items;
         listingTruncated = org1.truncated;
       } else {
         // Classic tokens may need user endpoint
-        const user1 = await fetchAllPages(`https://api.github.com/user/repos?per_page=100&sort=updated&type=all`, headers);
+        // kintsugi (NOR-251): the fallback gets only what the org attempt left; with nothing left it is not called.
+        const left = scanBudget - org1.pages;
+        const user1 = left >= 1
+          ? await fetchAllPages(`https://api.github.com/user/repos?per_page=100&sort=updated&type=all`, headers, fetch, left)
+          : { ok: false, status: 0, items: [], truncated: false, pages: 0 };
         listingPages += user1.pages;
         if (user1.ok) {
           repos = user1.items.filter((r: any) => r.full_name?.startsWith(`${org}/`));
@@ -458,19 +476,6 @@ export class Brook extends DurableObject<Env> {
     let totalNewCommits = 0;
     const lastCheck = this.getMeta("last_check_ts") || new Date(Date.now() - 3600000).toISOString();
 
-    // kintsugi: per-repo failures used to vanish (continue / empty catch), so a scan that hit the
-    // subrequest limit still looked complete. Count them, cap fetches to a budget, and say so.
-    // kintsugi: an unparseable budget (NaN) silently stopped binding; validate and fall back loudly.
-    let budget = Number(this.env.SUBREQUEST_BUDGET ?? "45");
-    if (!Number.isInteger(budget) || budget < POST_SCAN_CALLS + 1 || budget > 1000) {
-      newAlerts.push(this.makeAlert("git", "warn", `SUBREQUEST_BUDGET "${this.env.SUBREQUEST_BUDGET}" invalid; using 45`));
-      budget = 45;
-    }
-    // kintsugi: the budget counts the listing pages too (the audit found it started after them). Default 45 leaves
-    // headroom under Free's 50 for the few post-scan calls (fleet bridge, registry).
-    // kintsugi (NOR-245 fix-once): the fleet-bridge and registry calls ran outside the budget (45 could become 47).
-    // Reserve them up front so SUBREQUEST_BUDGET caps every subrequest this check makes.
-    const scanBudget = budget - POST_SCAN_CALLS;
     let used = listingPages, failedRepos = 0, unscanned = 0, failedDetails = 0, skippedDetails = 0;
     let scannedRepos = 0, truncatedRepos = 0;
     for (let i = 0; i < repos.length; i++) {

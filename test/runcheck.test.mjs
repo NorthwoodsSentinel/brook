@@ -16,14 +16,17 @@ function makeCtx() {
 }
 const now = Date.now();
 const isoAgo = h => new Date(now - h * 3600e3).toISOString();
-function gh({ delay = 0, repos = 3, commitsFor = () => [], detail = () => ({ ok: true, stats: { total: 1 } }), bridge = [{ commit: { author: { date: isoAgo(1) } } }] } = {}) {
+function gh({ listPages = 1, delay = 0, repos = 3, commitsFor = () => [], detail = () => ({ ok: true, stats: { total: 1 } }), bridge = [{ commit: { author: { date: isoAgo(1) } } }] } = {}) {
   const calls = [];
   globalThis.fetch = async (url) => {
     url = String(url); calls.push(url);
     if (delay) await new Promise(r => setTimeout(r, delay));
     const u = new URL(url);
     const page = Number(u.searchParams.get("page") || "1");
-    if (u.pathname.startsWith("/orgs/")) return new Response(JSON.stringify(Array.from({ length: repos }, (_, i) => ({ name: "r" + i, full_name: "o/r" + i }))), { status: 200 });
+    if (u.pathname.startsWith("/orgs/")) {
+      const h = page < listPages ? { link: `<https://api.github.com${u.pathname}?per_page=100&page=${page + 1}>; rel="next"` } : {};
+      return new Response(JSON.stringify(Array.from({ length: repos }, (_, i) => ({ name: "r" + ((page - 1) * repos + i), full_name: "o/r" + i }))), { status: 200, headers: h });
+    }
     if (u.pathname === "/repos/o/bridge/commits") return new Response(JSON.stringify(bridge), { status: 200 });
     let m = u.pathname.match(/^\/repos\/o\/(r\d+)\/commits$/);
     if (m) {
@@ -101,6 +104,11 @@ await t("window advances to the run START, not its end (commits pushed mid-scan 
   const before = Date.now(); await b.runCheck("test");
   const ts = Date.parse(ctx.db.prepare("SELECT value FROM meta WHERE key='last_check_ts'").all()[0].value);
   assert.ok(ts <= before + 50, `last_check_ts ${new Date(ts).toISOString()} is after run start ${new Date(before).toISOString()}`);
+});
+await t("NOR-251: a 10-page repo listing cannot exceed a small budget", async () => {
+  const r = await run(env({ SUBREQUEST_BUDGET: "5" }), { repos: 1, listPages: 10 });
+  assert.ok(r.calls.length <= 5, `made ${r.calls.length} calls on budget 5`);
+  assert.ok(r.msgs.includes("page cap") || r.msgs.includes("not scanned"), r.msgs);
 });
 for (const l of res) console.log(l);
 const f = res.filter(l => l.startsWith("FAIL")).length;
