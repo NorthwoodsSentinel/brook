@@ -384,6 +384,11 @@ export class Brook extends DurableObject<Env> {
     // Migrate existing agents table if missing new columns
     try { this.ctx.storage.sql.exec(`ALTER TABLE agents ADD COLUMN context TEXT DEFAULT ''`); } catch {}
     try { this.ctx.storage.sql.exec(`ALTER TABLE agents ADD COLUMN capabilities TEXT DEFAULT ''`); } catch {}
+    // NOR-259: per-repo head tracking, keyed by GitHub's immutable node id (a rename keeps its history).
+    // head_sha NULL never occurs here; '' = known empty repo. target_sha/next_page = the reconcile in progress.
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS repo_heads (
+      repo_id TEXT PRIMARY KEY, name TEXT NOT NULL, is_private INTEGER DEFAULT 0,
+      head_sha TEXT NOT NULL, target_sha TEXT, next_page INTEGER, pending INTEGER DEFAULT 0, last_seen TEXT)`);
   }
 
   // ─── Core check loop ──────────────────────────────────────────
@@ -416,139 +421,22 @@ export class Brook extends DurableObject<Env> {
     // kintsugi (NOR-245 fix-once): the fleet-bridge and registry calls ran outside the budget (45 could become 47).
     // Reserve them up front so SUBREQUEST_BUDGET caps every subrequest this check makes.
     const scanBudget = budget - POST_SCAN_CALLS;
-    // kintsugi (NOR-251): the budget is parsed BEFORE the listing so the listing pages are capped by it too.
-    let repos: any[] = [];
-    let listingTruncated = false;
-    let listingFailed = false;
-    let listingPages = 0;
-    try {
-      // Try org endpoint first, fall back to user repos filtered by org.
-      // NOR-236: follow every page (GitHub caps a page at 100); before this, Brook saw only page 1.
-      const org1 = await fetchAllPages(`https://api.github.com/orgs/${org}/repos?per_page=100&sort=updated`, headers, fetch, scanBudget);
-      listingPages += org1.pages;
-      if (org1.ok) {
-        repos = org1.items;
-        listingTruncated = org1.truncated;
-      } else {
-        // Classic tokens may need user endpoint
-        // kintsugi (NOR-251): the fallback gets only what the org attempt left; with nothing left it is not called.
-        const left = scanBudget - org1.pages;
-        const user1 = left >= 1
-          ? await fetchAllPages(`https://api.github.com/user/repos?per_page=100&sort=updated&type=all`, headers, fetch, left)
-          : { ok: false, status: 0, items: [], truncated: false, pages: 0 };
-        listingPages += user1.pages;
-        if (user1.ok) {
-          repos = user1.items.filter((r: any) => r.full_name?.startsWith(`${org}/`));
-          listingTruncated = user1.truncated;
-        } else {
-          // NOR-236: both listings failing used to leave repos=[] with NO alert (a silent gap).
-          listingFailed = true;
-          newAlerts.push(this.makeAlert("git", "critical",
-            `GitHub repo listing failed: org endpoint ${org1.status}, user endpoint ${user1.status}`));
-        }
-      }
-      if (repos.length > 0 && listingTruncated) {
-        newAlerts.push(this.makeAlert("git", "warn", `Repo listing stopped at the page cap; some repos are not watched`));
-      }
-      this.setMeta("last_repo_count", String(repos.length));
-    } catch (e) {
-      listingFailed = true;
-      newAlerts.push(this.makeAlert("git", "warn", `GitHub API call failed: ${e}`));
-    }
-
-    // Check for new repos
-    const knownRepos = new Set<string>();
-    const cursor = this.ctx.storage.sql.exec("SELECT name FROM repos");
-    for (const row of cursor) {
-      knownRepos.add(row.name as string);
-    }
-
-    const newRepos = repos.filter(r => !knownRepos.has(r.name));
-    if (newRepos.length > parseInt(this.env.ALERT_THRESHOLD_REPOS || "2")) {
-      newAlerts.push(this.makeAlert("new_repo", "critical",
-        `${newRepos.length} new repos created: ${newRepos.map((r: any) => r.name).join(", ")}`));
-    } else if (newRepos.length > 0) {
-      newAlerts.push(this.makeAlert("new_repo", "info",
-        `New repo(s): ${newRepos.map((r: any) => r.name).join(", ")}`));
-    }
-
-    // Check each repo for new commits
-    let totalNewCommits = 0;
-    const lastCheck = this.getMeta("last_check_ts") || new Date(Date.now() - 3600000).toISOString();
-
-    let used = listingPages, failedRepos = 0, unscanned = 0, failedDetails = 0, skippedDetails = 0;
-    let scannedRepos = 0, truncatedRepos = 0;
-    for (let i = 0; i < repos.length; i++) {
-      const repo = repos[i];
-      if (used >= scanBudget) { unscanned = repos.length - i; break; }
-      // kintsugi (NOR-245): the commit list read one page of 50, so a burst past 50 counted as fully scanned.
-      // Follow pages within the budget; a list still cut short counts as truncated and holds the window.
-      const pageCap = commitPageCap(scanBudget, used + 1, repos.length - i - 1);
-      const detailFailBefore = failedDetails, detailSkipBefore = skippedDetails;
-      used++;
-      try {
-        const listed = await fetchAllPages(
-          `https://api.github.com/repos/${org}/${repo.name}/commits?since=${encodeURIComponent(lastCheck)}&per_page=100`,
-          headers, fetch, pageCap
-        );
-        used += Math.max(0, listed.pages - 1);
-        if (!listed.ok) { failedRepos++; continue; } // kintsugi: a malformed 200 is a failed repo, not "no commits"
-        if (listed.truncated) truncatedRepos++;
-        const commits = listed.items;
-        if (commits.length > 0 && typeof commits[0]?.sha !== "string") { failedRepos++; continue; }
-
-        if (commits.length > 0) {
-          totalNewCommits += commits.length;
-
-          // Check for large commits
-          for (const commit of commits.slice(0, 5)) {
-            // detail calls are optional: spend budget on them only if every remaining repo still gets its list call
-            if (scanBudget - used <= repos.length - i - 1) { skippedDetails++; continue; }
-            used++;
-            try {
-              const detailRes = await fetch(
-                `https://api.github.com/repos/${org}/${repo.name}/commits/${commit.sha}`,
-                { headers }
-              );
-              if (!detailRes.ok) failedDetails++;
-              if (detailRes.ok) {
-                const detail = await detailRes.json() as any;
-                if (detail.stats && detail.stats.total > parseInt(this.env.ALERT_THRESHOLD_FILES || "100")) {
-                  newAlerts.push(this.makeAlert("volume", "warn",
-                    `Large commit in ${repo.name}: ${detail.stats.total} changes — "${commit.commit.message.split('\n')[0]}"`));
-                }
-              }
-            } catch { failedDetails++; }
-          }
-
-          // Update stored state
-          this.ctx.storage.sql.exec(
-            `INSERT OR REPLACE INTO repos (name, last_commit_sha, last_checked, is_private)
-             VALUES (?, ?, ?, ?)`,
-            repo.name, commits[0].sha, new Date().toISOString(), repo.private ? 1 : 0
-          );
-        } else {
-          // No new commits, just update check time
-          this.ctx.storage.sql.exec(
-            `INSERT OR REPLACE INTO repos (name, last_commit_sha, last_checked, is_private)
-             VALUES (?, COALESCE((SELECT last_commit_sha FROM repos WHERE name = ?), ''), ?, ?)`,
-            repo.name, repo.name, new Date().toISOString(), repo.private ? 1 : 0
-          );
-        }
-        // kintsugi (NOR-245 fix-once): "fully scanned" also needs every large-commit detail check done.
-        if (!listed.truncated && failedDetails === detailFailBefore && skippedDetails === detailSkipBefore) scannedRepos++;
-      } catch { failedRepos++; }
-    }
-    // kintsugi: a failed or truncated listing is also an incomplete scan; the commit window must not move past it.
-    const scanIncomplete = failedRepos > 0 || unscanned > 0 || truncatedRepos > 0 || listingFailed || listingTruncated || failedDetails > 0;
-    // skippedDetails (budget) is alert-only on purpose: on the Free plan it is chronic, and holding the window for it
-    // would re-scan an ever-growing range every run. Only the large-commit size check is lost, never a commit.
-    if (scanIncomplete || failedDetails > 0 || skippedDetails > 0) {
+    // NOR-259: the commit scan tracks each repo's default-branch HEAD by identity (GraphQL), and reconciles a changed
+    // head with compare(stored...target). The old global `since` window filtered by COMMIT date (an old-dated commit
+    // pushed later was never seen) and never advanced once the org outgrew the budget. Design: docs/DESIGN-NOR-259.md.
+    const scan = await this.scanHeads(org, headers, scanBudget, start, newAlerts);
+    const repos = scan.listed;
+    const newRepos = { length: scan.newRepoCount };
+    const scannedRepos = scan.coveredRepos;
+    const totalNewCommits = scan.newCommits;
+    const scanIncomplete = !scan.listingComplete || scan.pendingLeft > 0 || scan.failedRepos > 0;
+    if (scanIncomplete || scan.failedDetails > 0 || scan.skippedDetails > 0) {
       newAlerts.push(this.makeAlert("git", "warn",
-        `Repo scan incomplete: ${failedRepos} repo(s) failed, ${unscanned} not scanned, ${truncatedRepos} commit list(s) cut short, ${failedDetails} commit detail(s) failed, ${skippedDetails} skipped (subrequest budget ${budget}) of ${repos.length}`));
+        `Repo scan incomplete: head listing ${scan.listingComplete ? "complete" : "INCOMPLETE"}, ${scan.pendingLeft} repo(s) still pending, ${scan.failedRepos} failed, ${scan.failedDetails} commit detail(s) failed, ${scan.skippedDetails} skipped (subrequest budget ${budget}) of ${repos.length}`));
     }
-    this.setMeta("last_scan_failed", String(failedRepos));
-    this.setMeta("last_scan_unscanned", String(unscanned));
+    this.setMeta("last_repo_count", String(repos.length));
+    this.setMeta("last_scan_failed", String(scan.failedRepos));
+    this.setMeta("last_scan_unscanned", String(scan.pendingLeft));
 
     // Volume alert
     if (totalNewCommits > parseInt(this.env.ALERT_THRESHOLD_COMMITS || "20")) {
@@ -655,7 +543,8 @@ export class Brook extends DurableObject<Env> {
     // start "since" after commits it never saw in the failed or unscanned repos.
     // kintsugi (swarm on 4070c2e): advancing to END of run skipped commits pushed to a repo after it was queried but
     // before the run finished. Advance to the run's START; GitHub's `since` is inclusive, so a boundary commit may be seen twice, never zero times.
-    if (!scanIncomplete) this.setMeta("last_check_ts", new Date(start).toISOString());
+    // NOR-259 (F7): run START, and only when the head listing was complete and nothing is still pending.
+    if (scan.listingComplete && scan.pendingLeft === 0) this.setMeta("last_check_ts", new Date(start).toISOString());
     this.setMeta("total_checks", String(parseInt(this.getMeta("total_checks") || "0") + 1));
 
     const summary = [
@@ -1318,6 +1207,232 @@ export class Brook extends DurableObject<Env> {
       `SELECT * FROM alerts ${where} ORDER BY ts DESC LIMIT 50`
     ).toArray();
     return secureJsonResponse(rows);
+  }
+
+  // ─── NOR-259: head-SHA scan ───────────────────────────────────
+
+  private tx(fn: () => void) {
+    // Durable Object SQLite: all writes in fn commit together or not at all (crash-safe page progress, F3/F4).
+    (this.ctx.storage as any).transactionSync(fn);
+  }
+
+  private storeAlertNow(a: Alert) {
+    this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO alerts (id, ts, type, severity, message, read) VALUES (?, ?, ?, ?, ?, 0)`,
+      a.id, a.ts, a.type, a.severity, a.message);
+  }
+
+  // Deterministic id, so a replayed page or migration cannot store the same finding twice.
+  private fixedAlert(id: string, type: Alert["type"], severity: Alert["severity"], message: string): Alert {
+    return { id, ts: new Date().toISOString(), type, severity, message, read: false } as Alert;
+  }
+
+  // F5: complete only if every page is 2xx, has no `errors`, a valid connection, named nodes, pageInfo, and the last
+  // page says hasNextPage=false within the page budget.
+  async listHeads(org: string, headers: Record<string, string>, maxPages: number):
+    Promise<{ complete: boolean; repos: { id: string; name: string; isPrivate: boolean; oid: string }[]; pages: number; why: string }> {
+    const q = `query($org:String!,$after:String){organization(login:$org){repositories(first:100,after:$after,orderBy:{field:CREATED_AT,direction:ASC}){pageInfo{hasNextPage endCursor} nodes{id name isPrivate defaultBranchRef{target{oid}}}}}}`;
+    const repos: { id: string; name: string; isPrivate: boolean; oid: string }[] = [];
+    let after: string | null = null, pages = 0;
+    while (pages < Math.max(1, maxPages)) {
+      pages++;
+      let body: any;
+      try {
+        const res = await fetch("https://api.github.com/graphql", {
+          method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ query: q, variables: { org, after } }),
+        });
+        if (!res.ok) return { complete: false, repos, pages, why: `HTTP ${res.status}` };
+        body = await res.json();
+      } catch (e) { return { complete: false, repos, pages, why: `fetch failed: ${e}` }; }
+      if (body?.errors) return { complete: false, repos, pages, why: `GraphQL errors` };
+      const conn = body?.data?.organization?.repositories;
+      if (!conn || !Array.isArray(conn.nodes) || !conn.pageInfo || typeof conn.pageInfo.hasNextPage !== "boolean")
+        return { complete: false, repos, pages, why: `unexpected response shape` };
+      for (const n of conn.nodes) {
+        if (!n || typeof n.id !== "string" || !n.id || typeof n.name !== "string" || !n.name)
+          return { complete: false, repos, pages, why: `node without id/name` };
+        // Attack case 14: a node seen twice means the traversal shifted; don't trust it as a complete set.
+        if (repos.some(x => x.id === n.id)) return { complete: false, repos, pages, why: `duplicate node across pages` };
+        const oid = n.defaultBranchRef?.target?.oid;
+        repos.push({ id: n.id, name: n.name, isPrivate: !!n.isPrivate, oid: typeof oid === "string" ? oid : "" });
+      }
+      if (!conn.pageInfo.hasNextPage) return { complete: true, repos, pages, why: "" };
+      after = conn.pageInfo.endCursor;
+      if (typeof after !== "string" || !after) return { complete: false, repos, pages, why: `hasNextPage without endCursor` };
+    }
+    return { complete: false, repos, pages, why: `page budget reached` };
+  }
+
+  async scanHeads(org: string, headers: Record<string, string>, budget: number, runStart: number, newAlerts: Alert[]) {
+    const out = { listed: [] as any[], listingComplete: false, newRepoCount: 0, coveredRepos: 0, newCommits: 0,
+      pendingLeft: 0, failedRepos: 0, failedDetails: 0, skippedDetails: 0 };
+    const now = () => new Date().toISOString();
+    const heads = await this.listHeads(org, headers, budget);
+    let used = heads.pages;
+    out.listed = heads.repos;
+    out.listingComplete = heads.complete;
+    if (!heads.complete) {
+      newAlerts.push(this.makeAlert("git", heads.repos.length ? "warn" : "critical",
+        `GitHub head listing incomplete (${heads.why}); ${heads.repos.length} repo(s) read`));
+    }
+
+    const legacy = new Set<string>();
+    for (const r of this.ctx.storage.sql.exec("SELECT name FROM repos")) legacy.add(r.name as string);
+    const version = this.getMeta("head_tracking_version");
+
+    // F4: migration is one transaction (baselines + marker + the one disclosure), and only on a complete listing.
+    if (version !== "1") {
+      if (!heads.complete) return out; // try again next run; nothing marked, nothing disclosed
+      let baselined = 0;
+      const fresh: string[] = [];
+      this.tx(() => {
+        for (const r of heads.repos) {
+          this.ctx.storage.sql.exec(`INSERT OR IGNORE INTO repo_heads (repo_id, name, is_private, head_sha, pending, last_seen) VALUES (?, ?, ?, ?, 0, ?)`,
+            r.id, r.name, r.isPrivate ? 1 : 0, r.oid, now());
+          if (legacy.has(r.name)) baselined++; else fresh.push(r.name);
+        }
+        this.setMeta("head_tracking_version", "1");
+        const m = this.fixedAlert("migration:head-tracking-v1", "git", "info",
+          `Brook switched to head tracking: ${baselined} repo(s) baselined at their current head; commits since ${this.getMeta("last_check_ts") || "the last complete scan"} were not individually reviewed.`);
+        this.storeAlertNow(m); newAlerts.push(m);
+        if (fresh.length) { const f = this.fixedAlert("migration:new-repos", "new_repo", "info", `New repo(s): ${fresh.join(", ")}`); this.storeAlertNow(f); newAlerts.push(f); }
+      });
+      out.newRepoCount = fresh.length;
+      out.coveredRepos = heads.repos.length;
+      return out;
+    }
+
+    // Register / refresh every listed repo; queue changed heads.
+    const live = new Map<string, string>();
+    const fresh: string[] = [];
+    for (const r of heads.repos) {
+      live.set(r.id, r.oid);
+      const row = this.ctx.storage.sql.exec("SELECT * FROM repo_heads WHERE repo_id = ?", r.id).toArray()[0] as any;
+      if (!row) {
+        // F1 (v3 review): identity is the node id. A same-name replacement is a NEW repo, not a rewrite.
+        const unreviewed = legacy.has(r.name);
+        this.tx(() => {
+          this.ctx.storage.sql.exec(`INSERT INTO repo_heads (repo_id, name, is_private, head_sha, pending, last_seen) VALUES (?, ?, ?, ?, 0, ?)`,
+            r.id, r.name, r.isPrivate ? 1 : 0, r.oid, now());
+          const a = unreviewed
+            ? this.fixedAlert(`rebaseline:${r.id}`, "git", "warn", `Re-baselined ${r.name} without review (absent from the head listing until now)`)
+            : this.fixedAlert(`newrepo:${r.id}`, "new_repo", "info", `New repo: ${r.name}`);
+          this.storeAlertNow(a);
+          newAlerts.push(a);
+        });
+        if (!unreviewed) fresh.push(r.name);
+        continue;
+      }
+      if (row.name !== r.name) {
+        const a = this.fixedAlert(`rename:${r.id}:${r.name}`, "git", "info", `Repo renamed: ${row.name} → ${r.name}`);
+        this.tx(() => { this.ctx.storage.sql.exec("UPDATE repo_heads SET name = ? WHERE repo_id = ?", r.name, r.id); this.storeAlertNow(a); });
+        newAlerts.push(a);
+      }
+      this.ctx.storage.sql.exec("UPDATE repo_heads SET is_private = ?, last_seen = ? WHERE repo_id = ?", r.isPrivate ? 1 : 0, now(), r.id);
+      if (!row.pending && row.head_sha !== r.oid) {
+        this.ctx.storage.sql.exec("UPDATE repo_heads SET pending = 1, target_sha = ?, next_page = 1 WHERE repo_id = ?", r.oid, r.id);
+      }
+    }
+    out.newRepoCount = fresh.length;
+
+    // Reconcile pending repos, round-robin from a stored cursor so one failing repo can't pin the front.
+    const pending = this.ctx.storage.sql.exec("SELECT repo_id FROM repo_heads WHERE pending = 1 ORDER BY repo_id").toArray().map((x: any) => x.repo_id as string);
+    const cursor = this.getMeta("reconcile_cursor") || "";
+    let k = pending.findIndex(id => id > cursor); if (k < 0) k = 0;
+    const order = pending.slice(k).concat(pending.slice(0, k));
+    for (const id of order) {
+      if (used >= budget) break;
+      // Attack case 17: only reconcile repos present in THIS listing. An unlisted id may have been deleted and its name
+      // reused by a different repo; querying by name would compare against the wrong repository.
+      if (!live.has(id)) continue;
+      this.setMeta("reconcile_cursor", id);
+      for (let p = 0; p < MAX_COMMIT_PAGES && used < budget; p++) {
+        const row = this.ctx.storage.sql.exec("SELECT * FROM repo_heads WHERE repo_id = ?", id).toArray()[0] as any;
+        if (!row || !row.pending) break;
+        const page = row.next_page || 1;
+        const knownEmpty = row.head_sha === "";
+        const url = row.target_sha === ""
+          ? null
+          : knownEmpty
+            ? `https://api.github.com/repos/${org}/${row.name}/commits?sha=${row.target_sha}&per_page=100&page=${page}`
+            : `https://api.github.com/repos/${org}/${row.name}/compare/${row.head_sha}...${row.target_sha}?per_page=100&page=${page}`;
+        let commits: any[] = [], hasNext = false, rewrite = "", fail = false;
+        if (url === null) {
+          rewrite = "default branch is now empty";
+        } else {
+          used++;
+          try {
+            const res = await fetch(url, { headers });
+            if (res.status === 404 && !knownEmpty) rewrite = "stored head no longer exists";
+            else if (!res.ok) fail = true;
+            else {
+              const body = await res.json() as any;
+              const link = res.headers.get("link") || "";
+              hasNext = link.split(",").some(x => x.trim().endsWith('rel="next"')); // F5 (v3): authoritative next page
+              if (knownEmpty) {
+                if (!Array.isArray(body)) fail = true; else commits = body;
+              } else if (!body || typeof body.status !== "string" || !Array.isArray(body.commits)) {
+                fail = true;
+              } else if (body.status === "identical") {
+                commits = []; hasNext = false;
+              } else if (body.status === "behind") {
+                rewrite = "history moved backwards"; hasNext = false;
+              } else if (body.status === "ahead" || body.status === "diverged") {
+                commits = body.commits; // F1 (v2): diverged still returns BASE..HEAD commits; process them
+                if (body.status === "diverged") rewrite = "history rewritten";
+              } else fail = true;
+              if (!fail && commits.some((c: any) => typeof c?.sha !== "string")) fail = true;
+            }
+          } catch { fail = true; }
+        }
+        if (fail) { out.failedRepos++; break; }
+
+        // Optional large-commit checks (network) happen BEFORE the transaction; they never block progress.
+        const pageAlerts: Alert[] = [];
+        if (rewrite) pageAlerts.push(this.fixedAlert(`rewrite:${id}:${row.head_sha}:${row.target_sha}`, "git", "warn",
+          `${row.name}: ${rewrite} (${row.head_sha.slice(0, 7) || "empty"} → ${String(row.target_sha).slice(0, 7) || "empty"})`));
+        for (const c of commits.slice(0, 5)) {
+          if (used >= budget) { out.skippedDetails++; continue; }
+          used++;
+          try {
+            const d = await fetch(`https://api.github.com/repos/${org}/${row.name}/commits/${c.sha}`, { headers });
+            if (!d.ok) { out.failedDetails++; continue; }
+            const det = await d.json() as any;
+            if (det?.stats && det.stats.total > parseInt(this.env.ALERT_THRESHOLD_FILES || "100"))
+              pageAlerts.push(this.fixedAlert(`large:${id}:${c.sha}`, "volume", "warn",
+                `Large commit in ${row.name}: ${det.stats.total} changes — "${String(c?.commit?.message || "").split("\n")[0]}"`));
+          } catch { out.failedDetails++; }
+        }
+
+        const done = !hasNext;
+        const liveHead = live.has(id) ? live.get(id)! : row.target_sha;
+        this.tx(() => {
+          for (const a of pageAlerts) this.storeAlertNow(a);
+          if (!done) {
+            this.ctx.storage.sql.exec("UPDATE repo_heads SET next_page = ? WHERE repo_id = ?", page + 1, id);
+          } else if (liveHead !== row.target_sha) {
+            // F2 (v3): the head moved on while this target finished; chain straight to the next target, stay pending.
+            this.ctx.storage.sql.exec("UPDATE repo_heads SET head_sha = ?, target_sha = ?, next_page = 1, pending = 1 WHERE repo_id = ?", row.target_sha, liveHead, id);
+          } else {
+            this.ctx.storage.sql.exec("UPDATE repo_heads SET head_sha = ?, target_sha = NULL, next_page = NULL, pending = 0 WHERE repo_id = ?", row.target_sha, id);
+          }
+          if (done) this.ctx.storage.sql.exec(`INSERT OR REPLACE INTO repos (name, last_commit_sha, last_checked, is_private) VALUES (?, ?, ?, ?)`,
+            row.name, row.target_sha, now(), row.is_private);
+        });
+        out.newCommits += commits.length;
+        newAlerts.push(...pageAlerts);
+        if (done && liveHead === row.target_sha) break;
+      }
+    }
+
+    // Covered = listed repos with nothing pending. Pending = listed repos still to reconcile.
+    for (const r of heads.repos) {
+      const row = this.ctx.storage.sql.exec("SELECT pending FROM repo_heads WHERE repo_id = ?", r.id).toArray()[0] as any;
+      if (row && row.pending) out.pendingLeft++; else out.coveredRepos++;
+    }
+    if (fresh.length > parseInt(this.env.ALERT_THRESHOLD_REPOS || "2"))
+      newAlerts.push(this.makeAlert("new_repo", "critical", `${fresh.length} new repos created: ${fresh.join(", ")}`));
+    return out;
   }
 
   private makeAlert(type: Alert["type"], severity: Alert["severity"], message: string): Alert {
