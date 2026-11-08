@@ -347,6 +347,25 @@ for (const bad of ['"failed"', '{"message":"failed"}', '[{"message":"x"}]']) {
   });
 }
 
+await t("[swarm 6effb25 HIGH] diverged multi-page whose final page doesn't end at the target: not done", async () => {
+  const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }], env({ SUBREQUEST_BUDGET: "30", ALERT_THRESHOLD_FILES: "100000" }));
+  gh({ repos: [{ id: "R1", name: "a", oid: "Z" }], compare: { "a:A...Z": { status: "diverged", commits: Array.from({ length: 150 }, (_, i) => C("w" + i)) } } });
+  await b.runCheck("test");
+  assert.equal(head(ctx, "R1").pending, 1); assert.equal(head(ctx, "R1").head_sha, "A"); assert.equal(meta(ctx, "last_check_ts"), undefined);
+});
+await t("[swarm 6effb25 MEDIUM] empty final page on page 3 with total 200: not done (target unverified)", async () => {
+  const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A", target: "Z", next: 3, pending: 1 }]);
+  gh({ repos: [{ id: "R1", name: "a", oid: "Z" }] });
+  const orig = globalThis.fetch;
+  globalThis.fetch = async (u, i) => String(u).includes("/compare/") ? new Response(JSON.stringify({ status: "ahead", total_commits: 200, commits: [] }), { status: 200 }) : orig(u, i);
+  await b.runCheck("test"); assert.equal(head(ctx, "R1").pending, 1);
+});
+await t("ahead with zero commits on page 1 (contradictory) is not done", async () => {
+  const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }]);
+  gh({ repos: [{ id: "R1", name: "a", oid: "Z" }], compare: { "a:A...Z": { status: "ahead", commits: [] } } });
+  await b.runCheck("test"); assert.equal(head(ctx, "R1").pending, 1);
+});
+
 // ── listing completeness ──
 await t("GraphQL 200 with errors = incomplete, no watermark", async () => {
   const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }]);

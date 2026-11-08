@@ -1360,7 +1360,7 @@ export class Brook extends DurableObject<Env> {
           : knownEmpty
             ? `https://api.github.com/repos/${org}/${row.name}/commits?sha=${row.target_sha}&per_page=100&page=${page}`
             : `https://api.github.com/repos/${org}/${row.name}/compare/${row.head_sha}...${row.target_sha}?per_page=100&page=${page}`;
-        let commits: any[] = [], hasNext = false, rewrite = "", fail = false;
+        let commits: any[] = [], hasNext = false, rewrite = "", fail = false, advancing = false;
         if (url === null) {
           rewrite = "default branch is now empty";
         } else {
@@ -1382,6 +1382,7 @@ export class Brook extends DurableObject<Env> {
               } else if (body.status === "behind") {
                 rewrite = "history moved backwards"; hasNext = false;
               } else if (body.status === "ahead" || body.status === "diverged") {
+                advancing = true;
                 commits = body.commits; // F1 (v2): diverged still returns BASE..HEAD commits; process them
                 if (body.status === "diverged") rewrite = "history rewritten";
                 // Audit e590c8e F2: "no next page" must agree with total_commits, or the last page is not proof of the end.
@@ -1393,7 +1394,9 @@ export class Brook extends DurableObject<Env> {
               // audit 1e8cb56 HIGH: a count is not identity. GitHub orders compare oldest→newest and history newest→oldest
               // (verified live 11/08), so the target must be the LAST commit of the final compare page and the FIRST
               // commit of history page 1. Otherwise the evidence doesn't show the target was reached.
-              if (!fail && !rewrite && !hasNext && !knownEmpty && commits.length && commits[commits.length - 1].sha !== row.target_sha) fail = true;
+              // swarm 6effb25: this applies to `diverged` too (compare still lists BASE..HEAD oldest→newest), and an EMPTY final
+              // ahead/diverged page proves nothing (the target would sit on an unverified earlier page): not done.
+              if (!fail && advancing && !hasNext && (commits.length === 0 || commits[commits.length - 1].sha !== row.target_sha)) fail = true;
               if (!fail && knownEmpty && page === 1 && commits[0]?.sha !== row.target_sha) fail = true;
             }
           } catch { fail = true; }
