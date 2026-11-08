@@ -40,7 +40,7 @@ function gh(world) {
       const slice = world.repos.slice(startIdx, startIdx + pageSize);
       const hasNext = startIdx + pageSize < world.repos.length;
       const nodes = slice.map(r => ({ id: r.id, name: r.name, isPrivate: false, defaultBranchRef: r.oid ? { target: { oid: r.oid } } : null }));
-      return new Response(JSON.stringify({ data: { organization: { repositories: { pageInfo: { hasNextPage: hasNext, endCursor: hasNext ? String(startIdx + pageSize) : null }, nodes } } } }), { status: 200 });
+      return new Response(JSON.stringify({ data: { repositoryOwner: { __typename: "User", repositories: { pageInfo: { hasNextPage: hasNext, endCursor: hasNext ? String(startIdx + pageSize) : null }, nodes } } } }), { status: 200 });
     }
     if (u.pathname === "/repos/o/bridge/commits") return new Response(JSON.stringify(bridge), { status: 200 });
     if (u.host === "raw.githubusercontent.com") return new Response("", { status: 404 });
@@ -297,6 +297,16 @@ await t("[audit F2] compare says total_commits 101 but sends 100 and no next lin
   assert.equal(head(ctx, "R1").pending, 1); assert.equal(head(ctx, "R1").head_sha, "A");
   assert.ok(msgs(r).includes("1 failed"), msgs(r)); assert.equal(meta(ctx, "last_check_ts"), undefined);
 });
+await t("[re-audit 9634dc4] last page with MORE commits than total_commits (100 vs 1) is contradictory: stays pending", async () => {
+  const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }]);
+  gh({ repos: [{ id: "R1", name: "a", oid: "Z" }] });
+  const orig = globalThis.fetch;
+  globalThis.fetch = async (u, i) => String(u).includes("/compare/")
+    ? new Response(JSON.stringify({ status: "ahead", total_commits: 1, commits: Array.from({ length: 100 }, (_, k) => C("m" + k)) }), { status: 200 })
+    : orig(u, i);
+  await b.runCheck("test");
+  assert.equal(head(ctx, "R1").pending, 1); assert.equal(meta(ctx, "last_check_ts"), undefined);
+});
 await t("[audit F2] compare without total_commits is a failure, not 'done'", async () => {
   const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }]);
   gh({ repos: [{ id: "R1", name: "a", oid: "Z" }] });
@@ -320,7 +330,7 @@ await t("GraphQL 200 with errors = incomplete, no watermark", async () => {
 });
 await t("missing pageInfo = incomplete", async () => {
   const { b } = await seeded([]);
-  gh({ repos: [], graphql: () => new Response(JSON.stringify({ data: { organization: { repositories: { nodes: [] } } } }), { status: 200 }) });
+  gh({ repos: [], graphql: () => new Response(JSON.stringify({ data: { repositoryOwner: { __typename: "User", repositories: { nodes: [] } } } }), { status: 200 }) });
   const r = await b.runCheck("test"); assert.ok(msgs(r).includes("unexpected response shape"), msgs(r));
 });
 await t("hasNextPage at the page budget = incomplete", async () => {
@@ -339,6 +349,24 @@ await t("[Codex 12] listing is ordered by CREATED_AT ascending (new repos append
   let q = ""; gh({ repos: [], graphql: () => null });
   const orig = globalThis.fetch; globalThis.fetch = async (u, i) => { if (String(u).endsWith("/graphql")) q = JSON.parse(i.body).query; return orig(u, i); };
   await b.runCheck("test"); assert.ok(q.includes("orderBy:{field:CREATED_AT,direction:ASC}"), q);
+});
+
+await t("[swarm HIGH] owner is a User account: query uses repositoryOwner (not organization) with ownerAffiliations OWNER", async () => {
+  const { b } = await seeded([]);
+  let q = ""; gh({ repos: [] });
+  const orig = globalThis.fetch; globalThis.fetch = async (u, i) => { if (String(u).endsWith("/graphql")) q = JSON.parse(i.body).query; return orig(u, i); };
+  await b.runCheck("test");
+  assert.ok(q.includes("repositoryOwner(login:$org)") && !q.includes("organization("), q); assert.ok(q.includes("ownerAffiliations:[OWNER]"), q);
+});
+await t("[swarm HIGH] GitHub's real not-found shape (null owner + errors) = incomplete, no watermark", async () => {
+  const { b, ctx } = await seeded([]);
+  gh({ repos: [], graphql: () => new Response(JSON.stringify({ data: { repositoryOwner: null }, errors: [{ type: "NOT_FOUND", message: "Could not resolve" }] }), { status: 200 }) });
+  const r = await b.runCheck("test"); assert.ok(msgs(r).includes("head listing INCOMPLETE"), msgs(r)); assert.equal(meta(ctx, "last_check_ts"), undefined);
+});
+await t("[swarm LOW] errors: [] is not treated as a failure", async () => {
+  const { b, ctx } = await seeded([]);
+  gh({ repos: [], graphql: () => new Response(JSON.stringify({ errors: [], data: { repositoryOwner: { __typename: "User", repositories: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } }), { status: 200 }) });
+  await b.runCheck("test"); assert.ok(meta(ctx, "last_check_ts"));
 });
 
 // ── kept from the pre-NOR-259 suite (bridge + budget) ──

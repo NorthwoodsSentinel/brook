@@ -1230,7 +1230,7 @@ export class Brook extends DurableObject<Env> {
   // page says hasNextPage=false within the page budget.
   async listHeads(org: string, headers: Record<string, string>, maxPages: number):
     Promise<{ complete: boolean; repos: { id: string; name: string; isPrivate: boolean; oid: string }[]; pages: number; why: string }> {
-    const q = `query($org:String!,$after:String){organization(login:$org){repositories(first:100,after:$after,orderBy:{field:CREATED_AT,direction:ASC}){pageInfo{hasNextPage endCursor} nodes{id name isPrivate defaultBranchRef{target{oid}}}}}}`;
+    const q = `query($org:String!,$after:String){repositoryOwner(login:$org){__typename repositories(first:100,after:$after,ownerAffiliations:[OWNER],orderBy:{field:CREATED_AT,direction:ASC}){pageInfo{hasNextPage endCursor} nodes{id name isPrivate defaultBranchRef{target{oid}}}}}}`;
     const repos: { id: string; name: string; isPrivate: boolean; oid: string }[] = [];
     let after: string | null = null, pages = 0;
     while (pages < Math.max(1, maxPages)) {
@@ -1244,8 +1244,11 @@ export class Brook extends DurableObject<Env> {
         if (!res.ok) return { complete: false, repos, pages, why: `HTTP ${res.status}` };
         body = await res.json();
       } catch (e) { return { complete: false, repos, pages, why: `fetch failed: ${e}` }; }
-      if (body?.errors) return { complete: false, repos, pages, why: `GraphQL errors` };
-      const conn = body?.data?.organization?.repositories;
+      // swarm (Margin, e590c8e): `errors: []` is not an error; a non-empty list is.
+      if (Array.isArray(body?.errors) && body.errors.length) return { complete: false, repos, pages, why: `GraphQL errors` };
+      // swarm HIGH (verified 11/08): NorthwoodsSentinel is a User, not an Organization; organization(login:) failed every
+      // run. repositoryOwner works for both; ownerAffiliations OWNER keeps it to repos the owner holds (incl. private).
+      const conn = body?.data?.repositoryOwner?.repositories;
       if (!conn || !Array.isArray(conn.nodes) || !conn.pageInfo || typeof conn.pageInfo.hasNextPage !== "boolean")
         return { complete: false, repos, pages, why: `unexpected response shape` };
       for (const n of conn.nodes) {
@@ -1382,7 +1385,8 @@ export class Brook extends DurableObject<Env> {
                 if (body.status === "diverged") rewrite = "history rewritten";
                 // Audit e590c8e F2: "no next page" must agree with total_commits, or the last page is not proof of the end.
                 if (!Number.isInteger(body.total_commits)) fail = true;
-                else if (!hasNext && (page - 1) * 100 + commits.length < body.total_commits) fail = true;
+                // re-audit 9634dc4: on the last page the count must EQUAL total_commits; more than total is contradictory too.
+                else if (!hasNext && (page - 1) * 100 + commits.length !== body.total_commits) fail = true;
               } else fail = true;
               if (!fail && commits.some((c: any) => typeof c?.sha !== "string")) fail = true;
             }
