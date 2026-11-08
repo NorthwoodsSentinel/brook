@@ -203,13 +203,14 @@ function isGitHubApi(u: string): boolean {
   try { const x = new URL(u); return x.protocol === "https:" && x.host === "api.github.com"; } catch { return false; }
 }
 export async function fetchAllPages(
-  firstUrl: string, headers: Record<string, string>, fetchFn: typeof fetch = fetch,
+  firstUrl: string, headers: Record<string, string>, fetchFn: typeof fetch = fetch, maxPages: number = MAX_REPO_PAGES,
 ): Promise<{ ok: boolean; status: number; items: any[]; truncated: boolean; pages: number }> {
   const items: any[] = [];
   let url: string | null = firstUrl;
   let status = 0;
   let pages = 0;
-  for (let page = 0; url && page < MAX_REPO_PAGES; page++) {
+  const cap = Math.max(1, Math.min(MAX_REPO_PAGES, Math.floor(maxPages)));
+  for (let page = 0; url && page < cap; page++) {
     const res = await fetchFn(url, { headers });
     pages = page + 1;
     status = res.status;
@@ -224,6 +225,23 @@ export async function fetchAllPages(
     if (url && !isGitHubApi(url)) return { ok: true, status, items, truncated: true, pages };
   }
   return { ok: true, status, items, truncated: url !== null, pages };
+}
+
+// kintsugi (NOR-245): the bridge date was read unchecked, so a bad or missing date gave NaN and no drift alert.
+// Returns hours since the newest bridge commit, or null when the date is missing or unparseable.
+export function bridgeAgeHours(commits: any[], now: number = Date.now()): number | null {
+  const d = commits?.[0]?.commit?.author?.date;
+  if (typeof d !== "string") return null;
+  const t = Date.parse(d);
+  if (!Number.isFinite(t)) return null;
+  return (now - t) / (1000 * 60 * 60);
+}
+
+// NOR-245: extra commit-list pages one repo may use, leaving one list call for every repo still to come.
+export const MAX_COMMIT_PAGES = 3;
+export function commitPageCap(budget: number, used: number, reposLeftAfterThis: number): number {
+  const spare = budget - used - reposLeftAfterThis;
+  return 1 + Math.max(0, Math.min(MAX_COMMIT_PAGES - 1, spare));
 }
 
 function rejectOversizedBody(request: Request): Response | null {
@@ -439,18 +457,24 @@ export class Brook extends DurableObject<Env> {
     // kintsugi: the budget counts the listing pages too (the audit found it started after them). Default 45 leaves
     // headroom under Free's 50 for the few post-scan calls (fleet bridge, registry).
     let used = listingPages, failedRepos = 0, unscanned = 0, failedDetails = 0, skippedDetails = 0;
+    let scannedRepos = 0, truncatedRepos = 0;
     for (let i = 0; i < repos.length; i++) {
       const repo = repos[i];
       if (used >= budget) { unscanned = repos.length - i; break; }
+      // kintsugi (NOR-245): the commit list read one page of 50, so a burst past 50 counted as fully scanned.
+      // Follow pages within the budget; a list still cut short counts as truncated and holds the window.
+      const pageCap = commitPageCap(budget, used + 1, repos.length - i - 1);
       used++;
       try {
-        const commitsRes = await fetch(
-          `https://api.github.com/repos/${org}/${repo.name}/commits?since=${lastCheck}&per_page=50`,
-          { headers }
+        const listed = await fetchAllPages(
+          `https://api.github.com/repos/${org}/${repo.name}/commits?since=${encodeURIComponent(lastCheck)}&per_page=100`,
+          headers, fetch, pageCap
         );
-        if (!commitsRes.ok) { failedRepos++; continue; }
-        const commits = await commitsRes.json() as any[];
-        if (!Array.isArray(commits)) { failedRepos++; continue; } // kintsugi: a malformed 200 is a failed repo, not "no commits"
+        used += Math.max(0, listed.pages - 1);
+        if (!listed.ok) { failedRepos++; continue; } // kintsugi: a malformed 200 is a failed repo, not "no commits"
+        if (listed.truncated) truncatedRepos++;
+        const commits = listed.items;
+        if (commits.length > 0 && typeof commits[0]?.sha !== "string") { failedRepos++; continue; }
 
         if (commits.length > 0) {
           totalNewCommits += commits.length;
@@ -490,15 +514,16 @@ export class Brook extends DurableObject<Env> {
             repo.name, repo.name, new Date().toISOString(), repo.private ? 1 : 0
           );
         }
+        if (!listed.truncated) scannedRepos++;
       } catch { failedRepos++; }
     }
     // kintsugi: a failed or truncated listing is also an incomplete scan; the commit window must not move past it.
-    const scanIncomplete = failedRepos > 0 || unscanned > 0 || listingFailed || listingTruncated || failedDetails > 0;
+    const scanIncomplete = failedRepos > 0 || unscanned > 0 || truncatedRepos > 0 || listingFailed || listingTruncated || failedDetails > 0;
     // skippedDetails (budget) is alert-only on purpose: on the Free plan it is chronic, and holding the window for it
     // would re-scan an ever-growing range every run. Only the large-commit size check is lost, never a commit.
     if (scanIncomplete || failedDetails > 0 || skippedDetails > 0) {
       newAlerts.push(this.makeAlert("git", "warn",
-        `Repo scan incomplete: ${failedRepos} repo(s) failed, ${unscanned} not scanned, ${failedDetails} commit detail(s) failed, ${skippedDetails} skipped (subrequest budget ${budget}) of ${repos.length}`));
+        `Repo scan incomplete: ${failedRepos} repo(s) failed, ${unscanned} not scanned, ${truncatedRepos} commit list(s) cut short, ${failedDetails} commit detail(s) failed, ${skippedDetails} skipped (subrequest budget ${budget}) of ${repos.length}`));
     }
     this.setMeta("last_scan_failed", String(failedRepos));
     this.setMeta("last_scan_unscanned", String(unscanned));
@@ -521,10 +546,10 @@ export class Brook extends DurableObject<Env> {
         if (!Array.isArray(bridgeCommits)) {
           newAlerts.push(this.makeAlert("drift", "warn", `Fleet-bridge check got an unexpected response shape`));
         } else if (bridgeCommits.length > 0) {
-          const lastBridgeUpdate = new Date(bridgeCommits[0].commit.author.date);
-          const hoursSinceUpdate = (Date.now() - lastBridgeUpdate.getTime()) / (1000 * 60 * 60);
-
-          if (hoursSinceUpdate > 24) {
+          const hoursSinceUpdate = bridgeAgeHours(bridgeCommits);
+          if (hoursSinceUpdate === null) {
+            newAlerts.push(this.makeAlert("drift", "warn", `Fleet-bridge newest commit has no readable date`));
+          } else if (hoursSinceUpdate > 24) {
             newAlerts.push(this.makeAlert("drift", "warn",
               `Fleet-bridge has not been updated in ${Math.round(hoursSinceUpdate)} hours. Agents may be going dark.`));
           }
@@ -597,7 +622,8 @@ export class Brook extends DurableObject<Env> {
     this.ctx.storage.sql.exec(
       `INSERT INTO checks (ts, trigger, repos_checked, alerts_generated, duration_ms)
        VALUES (?, ?, ?, ?, ?)`,
-      new Date().toISOString(), trigger, repos.length, newAlerts.length, duration
+      // kintsugi (NOR-245): this counted every listed repo, scanned or not; it now counts fully scanned repos only.
+      new Date().toISOString(), trigger, scannedRepos, newAlerts.length, duration
     );
 
     // kintsugi: only advance the commit window when every repo was scanned; otherwise the next run would
@@ -607,7 +633,7 @@ export class Brook extends DurableObject<Env> {
 
     const summary = [
       `Brook check complete (${trigger}, ${duration}ms)`,
-      `Repos: ${repos.length} checked, ${newRepos.length} new`,
+      `Repos: ${scannedRepos} of ${repos.length} fully scanned, ${newRepos.length} new`,
       `Commits: ${totalNewCommits} since last check`,
       `Alerts: ${newAlerts.length} generated`,
     ].join('\n');
