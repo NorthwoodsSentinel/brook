@@ -194,7 +194,7 @@ await t("behind: warns history moved backwards and re-baselines", async () => {
 });
 await t("[Codex 16] diverged multi-page (201 commits): all processed once, ONE rewrite warning, done after page 3", async () => {
   const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }], env({ SUBREQUEST_BUDGET: "30" }));
-  const cs = Array.from({ length: 201 }, (_, i) => C("d" + i));
+  const cs = Array.from({ length: 201 }, (_, i) => C(i === 200 ? "Z" : "d" + i));
   gh({ repos: [{ id: "R1", name: "a", oid: "Z" }], compare: { "a:A...Z": { status: "diverged", commits: cs } } });
   const r = await b.runCheck("test");
   assert.ok(r.summary.includes("Commits: 201"), r.summary); assert.equal(head(ctx, "R1").pending, 0);
@@ -202,7 +202,7 @@ await t("[Codex 16] diverged multi-page (201 commits): all processed once, ONE r
 });
 await t("[Codex 11] compare pagination at an exact boundary (200): done after page 2, no page 3", async () => {
   const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }], env({ SUBREQUEST_BUDGET: "30" }));
-  const calls = gh({ repos: [{ id: "R1", name: "a", oid: "Z" }], compare: { "a:A...Z": { status: "ahead", commits: Array.from({ length: 200 }, (_, i) => C("e" + i)) } } });
+  const calls = gh({ repos: [{ id: "R1", name: "a", oid: "Z" }], compare: { "a:A...Z": { status: "ahead", commits: Array.from({ length: 200 }, (_, i) => C(i === 199 ? "Z" : "e" + i)) } } });
   const r = await b.runCheck("test");
   assert.ok(r.summary.includes("Commits: 200"), r.summary); assert.equal(head(ctx, "R1").pending, 0);
   assert.ok(!calls.some(c => c.includes("page=3")), "no invented page 3");
@@ -210,7 +210,7 @@ await t("[Codex 11] compare pagination at an exact boundary (200): done after pa
 await t("large reconcile across runs: resumes at next_page, never re-processes page 1", async () => {
   // budget 4 = 2 reserved + 1 graphql + 1 compare page per run
   const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }], env({ SUBREQUEST_BUDGET: "4", ALERT_THRESHOLD_FILES: "100000" }));
-  const world = { repos: [{ id: "R1", name: "a", oid: "Z" }], compare: { "a:A...Z": { status: "ahead", commits: Array.from({ length: 250 }, (_, i) => C("p" + i)) } } };
+  const world = { repos: [{ id: "R1", name: "a", oid: "Z" }], compare: { "a:A...Z": { status: "ahead", commits: Array.from({ length: 250 }, (_, i) => C(i === 249 ? "Z" : "p" + i)) } } };
   let total = 0;
   for (let run = 1; run <= 3; run++) { gh(world); const r = await b.runCheck("t"); total += Number(r.summary.match(/Commits: (\d+)/)[1]); }
   assert.equal(total, 250); assert.equal(head(ctx, "R1").pending, 0); assert.equal(head(ctx, "R1").head_sha, "Z");
@@ -224,20 +224,20 @@ await t("[Codex 3/15/18] head moves while old target finishes: stays pending for
 });
 await t("[Codex 4] live head returns to the completing target: clears pending, watermark advances", async () => {
   const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A", target: "B", next: 2, pending: 1 }]);
-  gh({ repos: [{ id: "R1", name: "a", oid: "B" }], compare: { "a:A...B": { status: "ahead", commits: Array.from({ length: 150 }, (_, i) => C("q" + i)) } } });
+  gh({ repos: [{ id: "R1", name: "a", oid: "B" }], compare: { "a:A...B": { status: "ahead", commits: Array.from({ length: 150 }, (_, i) => C(i === 149 ? "B" : "q" + i)) } } });
   await b.runCheck("test");
   assert.equal(head(ctx, "R1").pending, 0); assert.ok(meta(ctx, "last_check_ts"));
 });
 await t("[Codex 9] known-empty repo, exactly 100 then more: does not stop at 100", async () => {
   const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "" }], env({ SUBREQUEST_BUDGET: "30", ALERT_THRESHOLD_FILES: "100000" }));
-  gh({ repos: [{ id: "R1", name: "a", oid: "T" }], history: { "a:T": Array.from({ length: 101 }, (_, i) => C("k" + i)) } });
+  gh({ repos: [{ id: "R1", name: "a", oid: "T" }], history: { "a:T": Array.from({ length: 101 }, (_, i) => C(i === 0 ? "T" : "k" + i)) } });
   const r = await b.runCheck("test");
   assert.ok(r.summary.includes("Commits: 101"), r.summary); assert.equal(head(ctx, "R1").head_sha, "T");
   assert.ok(!msgs(r).includes("rewritten") && !msgs(r).includes("no longer exists"), msgs(r));
 });
 await t("[Codex 10] known-empty repo, exactly 200: all processed once, done on page 2", async () => {
   const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "" }], env({ SUBREQUEST_BUDGET: "30", ALERT_THRESHOLD_FILES: "100000" }));
-  const calls = gh({ repos: [{ id: "R1", name: "a", oid: "T" }], history: { "a:T": Array.from({ length: 200 }, (_, i) => C("k" + i)) } });
+  const calls = gh({ repos: [{ id: "R1", name: "a", oid: "T" }], history: { "a:T": Array.from({ length: 200 }, (_, i) => C(i === 0 ? "T" : "k" + i)) } });
   const r = await b.runCheck("test");
   assert.ok(r.summary.includes("Commits: 200"), r.summary); assert.equal(head(ctx, "R1").pending, 0);
   assert.ok(!calls.some(c => c.includes("page=3")));
@@ -245,7 +245,7 @@ await t("[Codex 10] known-empty repo, exactly 200: all processed once, done on p
 await t("[Codex 5] crash after progress write but before alerts: rolled back, commit L alerted exactly once", async () => {
   const db = new DatabaseSync(":memory:");
   const { b } = await seeded([{ id: "R1", name: "a", head: "A", target: "B", next: 1, pending: 1 }], env(), makeCtx(db, (q) => q.includes("SET head_sha") && !globalThis.__c5 && (globalThis.__c5 = true)));
-  gh({ repos: [{ id: "R1", name: "a", oid: "B" }], compare: { "a:A...B": { status: "ahead", commits: [C("L", 1000)] } } });
+  gh({ repos: [{ id: "R1", name: "a", oid: "B" }], compare: { "a:A...B": { status: "ahead", commits: [C("L", 1000), C("B")] } } });
   await b.runCheck("test").catch(() => {});
   assert.equal(db.prepare("SELECT COUNT(*) n FROM alerts WHERE id LIKE 'large:%'").all()[0].n, 0, "alert must roll back with progress");
   await new Brook(makeCtx(db), env()).runCheck("test");
@@ -256,7 +256,7 @@ await t("[Codex 6] crash after alert but before progress: rolled back, resumes, 
   const db = new DatabaseSync(":memory:");
   let armed = true;
   const { b } = await seeded([{ id: "R1", name: "a", head: "A", target: "B", next: 1, pending: 1 }], env(), makeCtx(db, (q) => armed && q.includes("UPDATE repo_heads SET head_sha") && (armed = false, true)));
-  gh({ repos: [{ id: "R1", name: "a", oid: "B" }], compare: { "a:A...B": { status: "ahead", commits: [C("L", 1000)] } } });
+  gh({ repos: [{ id: "R1", name: "a", oid: "B" }], compare: { "a:A...B": { status: "ahead", commits: [C("L", 1000), C("B")] } } });
   await b.runCheck("test").catch(() => {});
   await new Brook(makeCtx(db), env()).runCheck("test");
   assert.equal(db.prepare("SELECT COUNT(*) n FROM alerts WHERE id='large:R1:L'").all()[0].n, 1);
@@ -316,10 +316,36 @@ await t("[audit F2] compare without total_commits is a failure, not 'done'", asy
 });
 await t("[audit F3] multi-page diverged: the rewrite alert is returned once, not once per page", async () => {
   const { b } = await seeded([{ id: "R1", name: "a", head: "A" }], env({ SUBREQUEST_BUDGET: "30" }));
-  gh({ repos: [{ id: "R1", name: "a", oid: "Z" }], compare: { "a:A...Z": { status: "diverged", commits: Array.from({ length: 201 }, (_, i) => C("d" + i)) } } });
+  gh({ repos: [{ id: "R1", name: "a", oid: "Z" }], compare: { "a:A...Z": { status: "diverged", commits: Array.from({ length: 201 }, (_, i) => C(i === 200 ? "Z" : "d" + i)) } } });
   const r = await b.runCheck("test");
   assert.equal(r.alerts.filter(a => a.id.startsWith("rewrite:")).length, 1);
 });
+
+await t("[audit 1e8cb56 HIGH] final compare page that doesn't end at the target: not done, stays pending", async () => {
+  const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }]);
+  gh({ repos: [{ id: "R1", name: "a", oid: "B" }], compare: { "a:A...B": { status: "ahead", commits: [C("X")] } } }); // total 1 == count 1, but X is not B
+  await b.runCheck("test");
+  assert.equal(head(ctx, "R1").pending, 1); assert.equal(head(ctx, "R1").head_sha, "A"); assert.equal(meta(ctx, "last_check_ts"), undefined);
+});
+await t("[audit 1e8cb56 HIGH] page 2 repeats page 1 (count matches 200) but never reaches the target: not done", async () => {
+  const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }], env({ SUBREQUEST_BUDGET: "30", ALERT_THRESHOLD_FILES: "100000" }));
+  const p1 = Array.from({ length: 100 }, (_, i) => C("r" + i));
+  gh({ repos: [{ id: "R1", name: "a", oid: "Z" }], compare: { "a:A...Z": { status: "ahead", commits: p1.concat(p1) } } });
+  await b.runCheck("test");
+  assert.equal(head(ctx, "R1").pending, 1); assert.equal(meta(ctx, "last_check_ts"), undefined);
+});
+await t("[audit 1e8cb56 HIGH] known-empty history whose first commit isn't the target: not done", async () => {
+  const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "" }]);
+  gh({ repos: [{ id: "R1", name: "a", oid: "T" }], history: { "a:T": [C("other")] } });
+  await b.runCheck("test"); assert.equal(head(ctx, "R1").pending, 1);
+});
+for (const bad of ['"failed"', '{"message":"failed"}', '[{"message":"x"}]']) {
+  await t(`[audit 1e8cb56 MEDIUM] GraphQL errors=${bad} alongside data = incomplete`, async () => {
+    const { b, ctx } = await seeded([]);
+    gh({ repos: [], graphql: () => new Response(`{"errors":${bad},"data":{"repositoryOwner":{"__typename":"User","repositories":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`, { status: 200 }) });
+    const r = await b.runCheck("test"); assert.ok(msgs(r).includes("GraphQL errors"), msgs(r)); assert.equal(meta(ctx, "last_check_ts"), undefined);
+  });
+}
 
 // ── listing completeness ──
 await t("GraphQL 200 with errors = incomplete, no watermark", async () => {

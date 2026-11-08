@@ -421,7 +421,7 @@ export class Brook extends DurableObject<Env> {
     // kintsugi (NOR-245 fix-once): the fleet-bridge and registry calls ran outside the budget (45 could become 47).
     // Reserve them up front so SUBREQUEST_BUDGET caps every subrequest this check makes.
     const scanBudget = budget - POST_SCAN_CALLS;
-    // NOR-259: the commit scan tracks each repo's default-branch HEAD by identity (GraphQL), and reconciles a changed
+    // kintsugi (NOR-259): the commit scan tracks each repo's default-branch HEAD by identity (GraphQL), and reconciles a changed
     // head with compare(stored...target). The old global `since` window filtered by COMMIT date (an old-dated commit
     // pushed later was never seen) and never advanced once the org outgrew the budget. Design: docs/DESIGN-NOR-259.md.
     const scan = await this.scanHeads(org, headers, scanBudget, start, newAlerts);
@@ -1245,7 +1245,8 @@ export class Brook extends DurableObject<Env> {
         body = await res.json();
       } catch (e) { return { complete: false, repos, pages, why: `fetch failed: ${e}` }; }
       // swarm (Margin, e590c8e): `errors: []` is not an error; a non-empty list is.
-      if (Array.isArray(body?.errors) && body.errors.length) return { complete: false, repos, pages, why: `GraphQL errors` };
+      // audit 1e8cb56: anything in `errors` other than absent/null/[] (a string, an object, a non-empty list) is a failure.
+      if (body?.errors != null && !(Array.isArray(body.errors) && body.errors.length === 0)) return { complete: false, repos, pages, why: `GraphQL errors` };
       // swarm HIGH (verified 11/08): NorthwoodsSentinel is a User, not an Organization; organization(login:) failed every
       // run. repositoryOwner works for both; ownerAffiliations OWNER keeps it to repos the owner holds (incl. private).
       const conn = body?.data?.repositoryOwner?.repositories;
@@ -1389,6 +1390,11 @@ export class Brook extends DurableObject<Env> {
                 else if (!hasNext && (page - 1) * 100 + commits.length !== body.total_commits) fail = true;
               } else fail = true;
               if (!fail && commits.some((c: any) => typeof c?.sha !== "string")) fail = true;
+              // audit 1e8cb56 HIGH: a count is not identity. GitHub orders compare oldest→newest and history newest→oldest
+              // (verified live 11/08), so the target must be the LAST commit of the final compare page and the FIRST
+              // commit of history page 1. Otherwise the evidence doesn't show the target was reached.
+              if (!fail && !rewrite && !hasNext && !knownEmpty && commits.length && commits[commits.length - 1].sha !== row.target_sha) fail = true;
+              if (!fail && knownEmpty && page === 1 && commits[0]?.sha !== row.target_sha) fail = true;
             }
           } catch { fail = true; }
         }
