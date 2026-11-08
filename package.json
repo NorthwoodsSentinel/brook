@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "npx -y esbuild@0.24.0 src/index.ts --bundle --format=esm --platform=neutral --alias:cloudflare:workers=./test/cf-stub.mjs --outfile=dist/index.mjs --log-level=error && node test/paginate.test.mjs && node test/nor245.test.mjs"
+    "test": "npx -y esbuild@0.24.0 src/index.ts --bundle --format=esm --platform=neutral --alias:cloudflare:workers=./test/cf-stub.mjs --outfile=dist/index.mjs --log-level=error && node test/paginate.test.mjs && node test/nor245.test.mjs && node test/runcheck.test.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261031.1",

@@ -229,9 +229,17 @@ export async function fetchAllPages(
 
 // kintsugi (NOR-245): the bridge date was read unchecked, so a bad or missing date gave NaN and no drift alert.
 // Returns hours since the newest bridge commit, or null when the date is missing or unparseable.
+// kintsugi (NOR-245 fix-once): Date.parse is permissive ("2026-02-30" rolls to March 2), so require strict ISO-8601
+// and check the calendar date survives a round trip.
+const ISO_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 export function bridgeAgeHours(commits: any[], now: number = Date.now()): number | null {
   const d = commits?.[0]?.commit?.author?.date;
   if (typeof d !== "string") return null;
+  const m = ISO_RE.exec(d);
+  if (!m) return null;
+  const [y, mo, da, h, mi, se] = m.slice(1, 7).map(Number);
+  const cal = new Date(Date.UTC(y, mo - 1, da));
+  if (cal.getUTCFullYear() !== y || cal.getUTCMonth() !== mo - 1 || cal.getUTCDate() !== da || h > 23 || mi > 59 || se > 59) return null;
   const t = Date.parse(d);
   if (!Number.isFinite(t)) return null;
   return (now - t) / (1000 * 60 * 60);
@@ -239,6 +247,8 @@ export function bridgeAgeHours(commits: any[], now: number = Date.now()): number
 
 // NOR-245: extra commit-list pages one repo may use, leaving one list call for every repo still to come.
 export const MAX_COMMIT_PAGES = 3;
+// fleet-bridge + registry: the two subrequests after the repo scan, reserved inside SUBREQUEST_BUDGET.
+export const POST_SCAN_CALLS = 2;
 export function commitPageCap(budget: number, used: number, reposLeftAfterThis: number): number {
   const spare = budget - used - reposLeftAfterThis;
   return 1 + Math.max(0, Math.min(MAX_COMMIT_PAGES - 1, spare));
@@ -450,20 +460,24 @@ export class Brook extends DurableObject<Env> {
     // subrequest limit still looked complete. Count them, cap fetches to a budget, and say so.
     // kintsugi: an unparseable budget (NaN) silently stopped binding; validate and fall back loudly.
     let budget = Number(this.env.SUBREQUEST_BUDGET ?? "45");
-    if (!Number.isInteger(budget) || budget < 1 || budget > 1000) {
+    if (!Number.isInteger(budget) || budget < POST_SCAN_CALLS + 1 || budget > 1000) {
       newAlerts.push(this.makeAlert("git", "warn", `SUBREQUEST_BUDGET "${this.env.SUBREQUEST_BUDGET}" invalid; using 45`));
       budget = 45;
     }
     // kintsugi: the budget counts the listing pages too (the audit found it started after them). Default 45 leaves
     // headroom under Free's 50 for the few post-scan calls (fleet bridge, registry).
+    // kintsugi (NOR-245 fix-once): the fleet-bridge and registry calls ran outside the budget (45 could become 47).
+    // Reserve them up front so SUBREQUEST_BUDGET caps every subrequest this check makes.
+    const scanBudget = budget - POST_SCAN_CALLS;
     let used = listingPages, failedRepos = 0, unscanned = 0, failedDetails = 0, skippedDetails = 0;
     let scannedRepos = 0, truncatedRepos = 0;
     for (let i = 0; i < repos.length; i++) {
       const repo = repos[i];
-      if (used >= budget) { unscanned = repos.length - i; break; }
+      if (used >= scanBudget) { unscanned = repos.length - i; break; }
       // kintsugi (NOR-245): the commit list read one page of 50, so a burst past 50 counted as fully scanned.
       // Follow pages within the budget; a list still cut short counts as truncated and holds the window.
-      const pageCap = commitPageCap(budget, used + 1, repos.length - i - 1);
+      const pageCap = commitPageCap(scanBudget, used + 1, repos.length - i - 1);
+      const detailFailBefore = failedDetails, detailSkipBefore = skippedDetails;
       used++;
       try {
         const listed = await fetchAllPages(
@@ -482,7 +496,7 @@ export class Brook extends DurableObject<Env> {
           // Check for large commits
           for (const commit of commits.slice(0, 5)) {
             // detail calls are optional: spend budget on them only if every remaining repo still gets its list call
-            if (budget - used <= repos.length - i - 1) { skippedDetails++; continue; }
+            if (scanBudget - used <= repos.length - i - 1) { skippedDetails++; continue; }
             used++;
             try {
               const detailRes = await fetch(
@@ -514,7 +528,8 @@ export class Brook extends DurableObject<Env> {
             repo.name, repo.name, new Date().toISOString(), repo.private ? 1 : 0
           );
         }
-        if (!listed.truncated) scannedRepos++;
+        // kintsugi (NOR-245 fix-once): "fully scanned" also needs every large-commit detail check done.
+        if (!listed.truncated && failedDetails === detailFailBefore && skippedDetails === detailSkipBefore) scannedRepos++;
       } catch { failedRepos++; }
     }
     // kintsugi: a failed or truncated listing is also an incomplete scan; the commit window must not move past it.
@@ -545,7 +560,10 @@ export class Brook extends DurableObject<Env> {
         const bridgeCommits = await bridgeRes.json() as any[];
         if (!Array.isArray(bridgeCommits)) {
           newAlerts.push(this.makeAlert("drift", "warn", `Fleet-bridge check got an unexpected response shape`));
-        } else if (bridgeCommits.length > 0) {
+        } else if (bridgeCommits.length === 0) {
+          // kintsugi (NOR-245 fix-once): an empty commit list proves nothing about freshness; it used to pass silently.
+          newAlerts.push(this.makeAlert("drift", "warn", `Fleet-bridge check returned no commits`));
+        } else {
           const hoursSinceUpdate = bridgeAgeHours(bridgeCommits);
           if (hoursSinceUpdate === null) {
             newAlerts.push(this.makeAlert("drift", "warn", `Fleet-bridge newest commit has no readable date`));
