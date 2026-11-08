@@ -1,4 +1,4 @@
-# NOR-259 design v2: track default-branch head SHAs, not timestamps
+# NOR-259 design v3: track default-branch head SHAs, not timestamps
 
 v1 (pushed_at + per-repo since_ts) FAILED Codex design review (~/nws/reviews/nor259/design, 8 findings).
 Core reason, accepted: `commits?since=` filters by COMMIT date, so a commit authored last week and pushed
@@ -61,3 +61,35 @@ something is actually unseen.
   authenticated push webhooks carrying before/after (the current /webhook discards the payload). Ticket it.
 - Non-default branches: unchanged (not watched).
 - Migration gap in step 7 is reported once, not reconstructed.
+
+## v3 changes (answers Codex design review of v2, ~/nws/reviews/nor259/design-v2: architecture accepted, 7 findings)
+- F1 diverged: commits returned by compare are processed (volume/large-commit) for BOTH `ahead` and
+  `diverged` (compare = BASE..HEAD); `diverged`/`behind` additionally warns "history rewritten".
+  `behind` returns no new commits; it warns and re-baselines.
+- F2 empty repos: head_sha NULL = "unknown" (awaiting migration); head_sha '' = "known empty". A known-empty
+  repo that gets a head is reconciled by listing `commits?sha=<target>&per_page=100` (all commits are new),
+  with the same persisted progress as F3. Never treated as a rewrite.
+- F3 large reconciles: new columns `target_sha TEXT`, `next_page INTEGER`. When a repo goes pending, target_sha
+  is fixed to the head seen then. Each run resumes compare(head_sha...target_sha) / the commit listing at
+  next_page, processes those pages, and stores next_page. Done = last page reached: head_sha = target_sha,
+  target_sha/next_page cleared, pending=0. If the live head has moved past target meanwhile, the next run
+  enqueues a new reconcile target..current. So every reconcile makes progress each turn and finishes.
+- F4 migration: `meta.head_tracking_version`. A run whose heads listing is COMPLETE (per F5) baselines every
+  listed row with head_sha NULL (no commit review), then sets version=1 and emits ONE info alert with the count
+  and the stuck last_check_ts. If the listing is incomplete, nothing is marked migrated and no alert fires;
+  the next run tries again. After version=1, a NULL row that reappears (was unlisted) is baselined with its own
+  warn "re-baselined <repo> without review (absent from listing since migration)".
+- F5 GraphQL completeness: the heads listing is complete only if every page has HTTP 2xx, no `errors`, a
+  valid organization.repositories connection, every node has a non-empty `name`, `pageInfo{hasNextPage
+  endCursor}` is present, and the last page has hasNextPage=false within the budget. Otherwise: listing
+  incomplete (warning; no migration; no watermark), and repos seen on complete pages are still processed.
+- F6 `identical`: clears pending with no alert.
+- F7 watermark: `last_check_ts` = this run's START time, set only when the heads listing was complete AND no
+  repo is pending after the run.
+
+## Test plan (Codex attack cases go in unchanged)
+Mock GraphQL + compare + commits endpoints with: ahead; diverged with new commits; behind; identical;
+404 base; known-empty → first commit; >250 compare across three runs with a budget that allows one page per
+run (must finish on run 3, never re-process page 1); migration with truncated first listing then complete;
+GraphQL 200 with `errors`; missing pageInfo; hasNextPage=true at budget; rotating cursor with one always-
+failing repo (others still reconcile); watermark only on complete+zero-pending, equal to run start.
