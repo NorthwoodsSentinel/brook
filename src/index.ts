@@ -195,6 +195,29 @@ function isRateLimited(ip: string, path: string): boolean {
   return bucket.count > 60;
 }
 
+// NOR-236: follow GitHub's Link rel="next" until done or the page cap. ok=false only if the FIRST page fails;
+// a later page failing returns what was read plus truncated=true, so the caller can warn instead of going quiet.
+export const MAX_REPO_PAGES = 10;
+export async function fetchAllPages(
+  firstUrl: string, headers: Record<string, string>, fetchFn: typeof fetch = fetch,
+): Promise<{ ok: boolean; status: number; items: any[]; truncated: boolean }> {
+  const items: any[] = [];
+  let url: string | null = firstUrl;
+  let status = 0;
+  for (let page = 0; url && page < MAX_REPO_PAGES; page++) {
+    const res = await fetchFn(url, { headers });
+    status = res.status;
+    if (!res.ok) return { ok: page > 0, status, items, truncated: page > 0 };
+    const body = await res.json();
+    if (!Array.isArray(body)) return { ok: page > 0, status, items, truncated: page > 0 };
+    items.push(...body);
+    const link = res.headers.get("link") || "";
+    const next = link.split(",").map(s => s.trim()).find(s => s.endsWith('rel="next"'));
+    url = next ? next.slice(next.indexOf("<") + 1, next.indexOf(">")) : null;
+  }
+  return { ok: true, status, items, truncated: url !== null };
+}
+
 function rejectOversizedBody(request: Request): Response | null {
   const cl = request.headers.get("Content-Length");
   if (cl && parseInt(cl, 10) > MAX_BODY_BYTES) {
@@ -344,18 +367,26 @@ export class Brook extends DurableObject<Env> {
 
     let repos: any[] = [];
     try {
-      // Try org endpoint first, fall back to user repos filtered by org
-      let res = await fetch(`https://api.github.com/orgs/${org}/repos?per_page=100&sort=updated`, { headers });
-      if (res.ok) {
-        repos = await res.json() as any[];
+      // Try org endpoint first, fall back to user repos filtered by org.
+      // NOR-236: follow every page (GitHub caps a page at 100); before this, Brook saw only page 1.
+      const org1 = await fetchAllPages(`https://api.github.com/orgs/${org}/repos?per_page=100&sort=updated`, headers);
+      if (org1.ok) {
+        repos = org1.items;
       } else {
         // Classic tokens may need user endpoint
-        res = await fetch(`https://api.github.com/user/repos?per_page=100&sort=updated&type=all`, { headers });
-        if (res.ok) {
-          const allRepos = await res.json() as any[];
-          repos = allRepos.filter((r: any) => r.full_name?.startsWith(`${org}/`));
+        const user1 = await fetchAllPages(`https://api.github.com/user/repos?per_page=100&sort=updated&type=all`, headers);
+        if (user1.ok) {
+          repos = user1.items.filter((r: any) => r.full_name?.startsWith(`${org}/`));
+        } else {
+          // NOR-236: both listings failing used to leave repos=[] with NO alert (a silent gap).
+          newAlerts.push(this.makeAlert("git", "critical",
+            `GitHub repo listing failed: org endpoint ${org1.status}, user endpoint ${user1.status}`));
         }
       }
+      if (repos.length > 0 && (org1.ok ? org1.truncated : false)) {
+        newAlerts.push(this.makeAlert("git", "warn", `Repo listing stopped at the page cap; some repos are not watched`));
+      }
+      this.setMeta("last_repo_count", String(repos.length));
     } catch (e) {
       newAlerts.push(this.makeAlert("git", "warn", `GitHub API call failed: ${e}`));
     }
