@@ -375,6 +375,7 @@ export class Brook extends DurableObject<Env> {
 
     let repos: any[] = [];
     let listingTruncated = false;
+    let listingFailed = false;
     let listingPages = 0;
     try {
       // Try org endpoint first, fall back to user repos filtered by org.
@@ -393,6 +394,7 @@ export class Brook extends DurableObject<Env> {
           listingTruncated = user1.truncated;
         } else {
           // NOR-236: both listings failing used to leave repos=[] with NO alert (a silent gap).
+          listingFailed = true;
           newAlerts.push(this.makeAlert("git", "critical",
             `GitHub repo listing failed: org endpoint ${org1.status}, user endpoint ${user1.status}`));
         }
@@ -402,6 +404,7 @@ export class Brook extends DurableObject<Env> {
       }
       this.setMeta("last_repo_count", String(repos.length));
     } catch (e) {
+      listingFailed = true;
       newAlerts.push(this.makeAlert("git", "warn", `GitHub API call failed: ${e}`));
     }
 
@@ -483,7 +486,8 @@ export class Brook extends DurableObject<Env> {
         }
       } catch { failedRepos++; }
     }
-    const scanIncomplete = failedRepos > 0 || unscanned > 0;
+    // kintsugi: a failed or truncated listing is also an incomplete scan; the commit window must not move past it.
+    const scanIncomplete = failedRepos > 0 || unscanned > 0 || listingFailed || listingTruncated;
     if (scanIncomplete || failedDetails > 0 || skippedDetails > 0) {
       newAlerts.push(this.makeAlert("git", "warn",
         `Repo scan incomplete: ${failedRepos} repo(s) failed, ${unscanned} not scanned, ${failedDetails} commit detail(s) failed, ${skippedDetails} skipped (subrequest budget ${budget}) of ${repos.length}`));
@@ -515,6 +519,9 @@ export class Brook extends DurableObject<Env> {
               `Fleet-bridge has not been updated in ${Math.round(hoursSinceUpdate)} hours. Agents may be going dark.`));
           }
         }
+      } else {
+        // kintsugi: a non-2xx answer used to pass silently.
+        newAlerts.push(this.makeAlert("drift", "warn", `Fleet-bridge check got HTTP ${bridgeRes.status}`));
       }
     } catch (e) {
       newAlerts.push(this.makeAlert("drift", "info", `Could not check fleet-bridge: ${e}`));
@@ -527,6 +534,11 @@ export class Brook extends DurableObject<Env> {
         `https://raw.githubusercontent.com/${org}/${this.env.FLEET_BRIDGE_REPO}/main/registry/${new Date().toISOString().split('T')[0]}.md`,
         { headers }
       );
+      if (!regRes.ok) {
+        // kintsugi: non-2xx used to pass silently. No file for today is normal (info); anything else is a warn.
+        newAlerts.push(this.makeAlert("fragmentation", regRes.status === 404 ? "info" : "warn",
+          `Registry check got HTTP ${regRes.status}`));
+      }
       if (regRes.ok) {
         const regText = await regRes.text();
         const lines = regText.split('\n').filter(l => l.startsWith('|') && !l.includes('---') && !l.includes('Time'));
@@ -557,7 +569,7 @@ export class Brook extends DurableObject<Env> {
           }
         }
       }
-    } catch { /* registry may not exist yet for today's date */ }
+    } catch (e) { newAlerts.push(this.makeAlert("fragmentation", "warn", `Registry check failed: ${e}`)); }
 
     // ─── Step 4: Store and sleep ────────────────────────────────
 
