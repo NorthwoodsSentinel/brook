@@ -16,10 +16,11 @@ function makeCtx() {
 }
 const now = Date.now();
 const isoAgo = h => new Date(now - h * 3600e3).toISOString();
-function gh({ repos = 3, commitsFor = () => [], detail = () => ({ ok: true, stats: { total: 1 } }), bridge = [{ commit: { author: { date: isoAgo(1) } } }] } = {}) {
+function gh({ delay = 0, repos = 3, commitsFor = () => [], detail = () => ({ ok: true, stats: { total: 1 } }), bridge = [{ commit: { author: { date: isoAgo(1) } } }] } = {}) {
   const calls = [];
   globalThis.fetch = async (url) => {
     url = String(url); calls.push(url);
+    if (delay) await new Promise(r => setTimeout(r, delay));
     const u = new URL(url);
     const page = Number(u.searchParams.get("page") || "1");
     if (u.pathname.startsWith("/orgs/")) return new Response(JSON.stringify(Array.from({ length: repos }, (_, i) => ({ name: "r" + i, full_name: "o/r" + i }))), { status: 200 });
@@ -89,6 +90,17 @@ await t("150 commits but no spare budget: list cut short, repo not counted, wind
   const r = await run(env({ SUBREQUEST_BUDGET: "5" }), { repos: 2, commitsFor: n => n === "r0" ? commits(150) : [] });
   assert.equal(r.windowMoved, false); assert.ok(r.msgs.includes("1 commit list(s) cut short"), r.msgs);
   assert.equal(r.reposChecked, 1);
+});
+await t("future bridge date (2099) alerts as unreadable", async () => {
+  const r = await run(env(), { bridge: [{ commit: { author: { date: "2099-01-01T00:00:00Z" } } }] });
+  assert.ok(r.msgs.includes("no readable date"), r.msgs);
+});
+await t("window advances to the run START, not its end (commits pushed mid-scan are not skipped)", async () => {
+  const ctx = makeCtx(); const b = new Brook(ctx, env());
+  gh({ repos: 2, delay: 40 }); // ~5 calls x 40ms: end of run is >= 150ms after start
+  const before = Date.now(); await b.runCheck("test");
+  const ts = Date.parse(ctx.db.prepare("SELECT value FROM meta WHERE key='last_check_ts'").all()[0].value);
+  assert.ok(ts <= before + 50, `last_check_ts ${new Date(ts).toISOString()} is after run start ${new Date(before).toISOString()}`);
 });
 for (const l of res) console.log(l);
 const f = res.filter(l => l.startsWith("FAIL")).length;

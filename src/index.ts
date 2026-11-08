@@ -242,6 +242,8 @@ export function bridgeAgeHours(commits: any[], now: number = Date.now()): number
   if (cal.getUTCFullYear() !== y || cal.getUTCMonth() !== mo - 1 || cal.getUTCDate() !== da || h > 23 || mi > 59 || se > 59) return null;
   const t = Date.parse(d);
   if (!Number.isFinite(t)) return null;
+  // kintsugi (swarm on 4070c2e): a future date gave a negative age that never alerts; beyond 5 min of skew it is unreadable.
+  if (t > now + 5 * 60 * 1000) return null;
   return (now - t) / (1000 * 60 * 60);
 }
 
@@ -646,7 +648,9 @@ export class Brook extends DurableObject<Env> {
 
     // kintsugi: only advance the commit window when every repo was scanned; otherwise the next run would
     // start "since" after commits it never saw in the failed or unscanned repos.
-    if (!scanIncomplete) this.setMeta("last_check_ts", new Date().toISOString());
+    // kintsugi (swarm on 4070c2e): advancing to END of run skipped commits pushed to a repo after it was queried but
+    // before the run finished. Advance to the run's START; GitHub's `since` is inclusive, so a boundary commit may be seen twice, never zero times.
+    if (!scanIncomplete) this.setMeta("last_check_ts", new Date(start).toISOString());
     this.setMeta("total_checks", String(parseInt(this.getMeta("total_checks") || "0") + 1));
 
     const summary = [
