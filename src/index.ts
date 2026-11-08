@@ -430,7 +430,12 @@ export class Brook extends DurableObject<Env> {
 
     // kintsugi: per-repo failures used to vanish (continue / empty catch), so a scan that hit the
     // subrequest limit still looked complete. Count them, cap fetches to a budget, and say so.
-    const budget = parseInt(this.env.SUBREQUEST_BUDGET || "45");
+    // kintsugi: an unparseable budget (NaN) silently stopped binding; validate and fall back loudly.
+    let budget = Number(this.env.SUBREQUEST_BUDGET ?? "45");
+    if (!Number.isInteger(budget) || budget < 1 || budget > 1000) {
+      newAlerts.push(this.makeAlert("git", "warn", `SUBREQUEST_BUDGET "${this.env.SUBREQUEST_BUDGET}" invalid; using 45`));
+      budget = 45;
+    }
     // kintsugi: the budget counts the listing pages too (the audit found it started after them). Default 45 leaves
     // headroom under Free's 50 for the few post-scan calls (fleet bridge, registry).
     let used = listingPages, failedRepos = 0, unscanned = 0, failedDetails = 0, skippedDetails = 0;
@@ -445,6 +450,7 @@ export class Brook extends DurableObject<Env> {
         );
         if (!commitsRes.ok) { failedRepos++; continue; }
         const commits = await commitsRes.json() as any[];
+        if (!Array.isArray(commits)) { failedRepos++; continue; } // kintsugi: a malformed 200 is a failed repo, not "no commits"
 
         if (commits.length > 0) {
           totalNewCommits += commits.length;
@@ -487,7 +493,9 @@ export class Brook extends DurableObject<Env> {
       } catch { failedRepos++; }
     }
     // kintsugi: a failed or truncated listing is also an incomplete scan; the commit window must not move past it.
-    const scanIncomplete = failedRepos > 0 || unscanned > 0 || listingFailed || listingTruncated;
+    const scanIncomplete = failedRepos > 0 || unscanned > 0 || listingFailed || listingTruncated || failedDetails > 0;
+    // skippedDetails (budget) is alert-only on purpose: on the Free plan it is chronic, and holding the window for it
+    // would re-scan an ever-growing range every run. Only the large-commit size check is lost, never a commit.
     if (scanIncomplete || failedDetails > 0 || skippedDetails > 0) {
       newAlerts.push(this.makeAlert("git", "warn",
         `Repo scan incomplete: ${failedRepos} repo(s) failed, ${unscanned} not scanned, ${failedDetails} commit detail(s) failed, ${skippedDetails} skipped (subrequest budget ${budget}) of ${repos.length}`));
@@ -510,7 +518,9 @@ export class Brook extends DurableObject<Env> {
       );
       if (bridgeRes.ok) {
         const bridgeCommits = await bridgeRes.json() as any[];
-        if (bridgeCommits.length > 0) {
+        if (!Array.isArray(bridgeCommits)) {
+          newAlerts.push(this.makeAlert("drift", "warn", `Fleet-bridge check got an unexpected response shape`));
+        } else if (bridgeCommits.length > 0) {
           const lastBridgeUpdate = new Date(bridgeCommits[0].commit.author.date);
           const hoursSinceUpdate = (Date.now() - lastBridgeUpdate.getTime()) / (1000 * 60 * 60);
 
