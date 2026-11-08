@@ -199,26 +199,31 @@ function isRateLimited(ip: string, path: string): boolean {
 // NOR-236: follow GitHub's Link rel="next" until done or the page cap. ok=false only if the FIRST page fails;
 // a later page failing returns what was read plus truncated=true, so the caller can warn instead of going quiet.
 export const MAX_REPO_PAGES = 10;
+function isGitHubApi(u: string): boolean {
+  try { const x = new URL(u); return x.protocol === "https:" && x.host === "api.github.com"; } catch { return false; }
+}
 export async function fetchAllPages(
   firstUrl: string, headers: Record<string, string>, fetchFn: typeof fetch = fetch,
-): Promise<{ ok: boolean; status: number; items: any[]; truncated: boolean }> {
+): Promise<{ ok: boolean; status: number; items: any[]; truncated: boolean; pages: number }> {
   const items: any[] = [];
   let url: string | null = firstUrl;
   let status = 0;
+  let pages = 0;
   for (let page = 0; url && page < MAX_REPO_PAGES; page++) {
     const res = await fetchFn(url, { headers });
+    pages = page + 1;
     status = res.status;
-    if (!res.ok) return { ok: page > 0, status, items, truncated: page > 0 };
+    if (!res.ok) return { ok: page > 0, status, items, truncated: page > 0, pages: page + 1 };
     const body = await res.json();
-    if (!Array.isArray(body)) return { ok: page > 0, status, items, truncated: page > 0 };
+    if (!Array.isArray(body)) return { ok: page > 0, status, items, truncated: page > 0, pages: page + 1 };
     items.push(...body);
     const link = res.headers.get("link") || "";
     const next = link.split(",").map(s => s.trim()).find(s => s.endsWith('rel="next"'));
     url = next ? next.slice(next.indexOf("<") + 1, next.indexOf(">")) : null;
     // kintsugi: the bearer token rides on every page fetch, so only follow pages on GitHub's API host.
-    if (url && !url.startsWith("https://api.github.com/")) return { ok: true, status, items, truncated: true };
+    if (url && !isGitHubApi(url)) return { ok: true, status, items, truncated: true, pages };
   }
-  return { ok: true, status, items, truncated: url !== null };
+  return { ok: true, status, items, truncated: url !== null, pages };
 }
 
 function rejectOversizedBody(request: Request): Response | null {
@@ -370,16 +375,19 @@ export class Brook extends DurableObject<Env> {
 
     let repos: any[] = [];
     let listingTruncated = false;
+    let listingPages = 0;
     try {
       // Try org endpoint first, fall back to user repos filtered by org.
       // NOR-236: follow every page (GitHub caps a page at 100); before this, Brook saw only page 1.
       const org1 = await fetchAllPages(`https://api.github.com/orgs/${org}/repos?per_page=100&sort=updated`, headers);
+      listingPages += org1.pages;
       if (org1.ok) {
         repos = org1.items;
         listingTruncated = org1.truncated;
       } else {
         // Classic tokens may need user endpoint
         const user1 = await fetchAllPages(`https://api.github.com/user/repos?per_page=100&sort=updated&type=all`, headers);
+        listingPages += user1.pages;
         if (user1.ok) {
           repos = user1.items.filter((r: any) => r.full_name?.startsWith(`${org}/`));
           listingTruncated = user1.truncated;
@@ -420,7 +428,9 @@ export class Brook extends DurableObject<Env> {
     // kintsugi: per-repo failures used to vanish (continue / empty catch), so a scan that hit the
     // subrequest limit still looked complete. Count them, cap fetches to a budget, and say so.
     const budget = parseInt(this.env.SUBREQUEST_BUDGET || "45");
-    let used = 0, failedRepos = 0, unscanned = 0;
+    // kintsugi: the budget counts the listing pages too (the audit found it started after them). Default 45 leaves
+    // headroom under Free's 50 for the few post-scan calls (fleet bridge, registry).
+    let used = listingPages, failedRepos = 0, unscanned = 0, failedDetails = 0, skippedDetails = 0;
     for (let i = 0; i < repos.length; i++) {
       const repo = repos[i];
       if (used >= budget) { unscanned = repos.length - i; break; }
@@ -439,13 +449,14 @@ export class Brook extends DurableObject<Env> {
           // Check for large commits
           for (const commit of commits.slice(0, 5)) {
             // detail calls are optional: spend budget on them only if every remaining repo still gets its list call
-            if (budget - used <= repos.length - i - 1) break;
+            if (budget - used <= repos.length - i - 1) { skippedDetails++; continue; }
             used++;
             try {
               const detailRes = await fetch(
                 `https://api.github.com/repos/${org}/${repo.name}/commits/${commit.sha}`,
                 { headers }
               );
+              if (!detailRes.ok) failedDetails++;
               if (detailRes.ok) {
                 const detail = await detailRes.json() as any;
                 if (detail.stats && detail.stats.total > parseInt(this.env.ALERT_THRESHOLD_FILES || "100")) {
@@ -453,7 +464,7 @@ export class Brook extends DurableObject<Env> {
                     `Large commit in ${repo.name}: ${detail.stats.total} changes — "${commit.commit.message.split('\n')[0]}"`));
                 }
               }
-            } catch { /* skip detail fetch failures */ }
+            } catch { failedDetails++; }
           }
 
           // Update stored state
@@ -472,9 +483,10 @@ export class Brook extends DurableObject<Env> {
         }
       } catch { failedRepos++; }
     }
-    if (failedRepos > 0 || unscanned > 0) {
+    const scanIncomplete = failedRepos > 0 || unscanned > 0;
+    if (scanIncomplete || failedDetails > 0 || skippedDetails > 0) {
       newAlerts.push(this.makeAlert("git", "warn",
-        `Repo scan incomplete: ${failedRepos} repo(s) failed, ${unscanned} not scanned (subrequest budget ${budget}) of ${repos.length}`));
+        `Repo scan incomplete: ${failedRepos} repo(s) failed, ${unscanned} not scanned, ${failedDetails} commit detail(s) failed, ${skippedDetails} skipped (subrequest budget ${budget}) of ${repos.length}`));
     }
     this.setMeta("last_scan_failed", String(failedRepos));
     this.setMeta("last_scan_unscanned", String(unscanned));
@@ -566,7 +578,9 @@ export class Brook extends DurableObject<Env> {
       new Date().toISOString(), trigger, repos.length, newAlerts.length, duration
     );
 
-    this.setMeta("last_check_ts", new Date().toISOString());
+    // kintsugi: only advance the commit window when every repo was scanned; otherwise the next run would
+    // start "since" after commits it never saw in the failed or unscanned repos.
+    if (!scanIncomplete) this.setMeta("last_check_ts", new Date().toISOString());
     this.setMeta("total_checks", String(parseInt(this.getMeta("total_checks") || "0") + 1));
 
     const summary = [
