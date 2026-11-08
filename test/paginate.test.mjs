@@ -18,3 +18,11 @@ assert.equal(r.ok, true); assert.equal(r.items.length, 100); assert.equal(r.trun
 r = await fetchAllPages("https://api.github.com/x?page=1", {}, mk(Array.from({ length: MAX_REPO_PAGES + 2 }, (_, i) => p(1, i))));
 assert.equal(r.items.length, MAX_REPO_PAGES); assert.equal(r.truncated, true);
 console.log("paginate: 5/5 pass");
+// off-host next link: stop and mark truncated, never send the token elsewhere
+{
+  let calls = [];
+  const f = async (url) => { calls.push(url); return new Response(JSON.stringify([{ name: "a" }]), { status: 200, headers: { link: '<https://evil.example/x?page=2>; rel="next"' } }); };
+  const r = await fetchAllPages("https://api.github.com/x?page=1", {}, f);
+  assert.equal(calls.length, 1); assert.equal(r.truncated, true); assert.equal(r.items.length, 1);
+  console.log("off-host: pass");
+}

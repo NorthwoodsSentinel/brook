@@ -39,6 +39,7 @@ interface Env {
   FLEET_BRIDGE_REPO: string;
   ALERT_THRESHOLD_COMMITS: string;
   ALERT_THRESHOLD_FILES: string;
+  SUBREQUEST_BUDGET?: string;
   ALERT_THRESHOLD_REPOS: string;
 }
 
@@ -214,6 +215,8 @@ export async function fetchAllPages(
     const link = res.headers.get("link") || "";
     const next = link.split(",").map(s => s.trim()).find(s => s.endsWith('rel="next"'));
     url = next ? next.slice(next.indexOf("<") + 1, next.indexOf(">")) : null;
+    // kintsugi: the bearer token rides on every page fetch, so only follow pages on GitHub's API host.
+    if (url && !url.startsWith("https://api.github.com/")) return { ok: true, status, items, truncated: true };
   }
   return { ok: true, status, items, truncated: url !== null };
 }
@@ -366,24 +369,27 @@ export class Brook extends DurableObject<Env> {
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
     let repos: any[] = [];
+    let listingTruncated = false;
     try {
       // Try org endpoint first, fall back to user repos filtered by org.
       // NOR-236: follow every page (GitHub caps a page at 100); before this, Brook saw only page 1.
       const org1 = await fetchAllPages(`https://api.github.com/orgs/${org}/repos?per_page=100&sort=updated`, headers);
       if (org1.ok) {
         repos = org1.items;
+        listingTruncated = org1.truncated;
       } else {
         // Classic tokens may need user endpoint
         const user1 = await fetchAllPages(`https://api.github.com/user/repos?per_page=100&sort=updated&type=all`, headers);
         if (user1.ok) {
           repos = user1.items.filter((r: any) => r.full_name?.startsWith(`${org}/`));
+          listingTruncated = user1.truncated;
         } else {
           // NOR-236: both listings failing used to leave repos=[] with NO alert (a silent gap).
           newAlerts.push(this.makeAlert("git", "critical",
             `GitHub repo listing failed: org endpoint ${org1.status}, user endpoint ${user1.status}`));
         }
       }
-      if (repos.length > 0 && (org1.ok ? org1.truncated : false)) {
+      if (repos.length > 0 && listingTruncated) {
         newAlerts.push(this.makeAlert("git", "warn", `Repo listing stopped at the page cap; some repos are not watched`));
       }
       this.setMeta("last_repo_count", String(repos.length));
@@ -411,13 +417,20 @@ export class Brook extends DurableObject<Env> {
     let totalNewCommits = 0;
     const lastCheck = this.getMeta("last_check_ts") || new Date(Date.now() - 3600000).toISOString();
 
-    for (const repo of repos) {
+    // kintsugi: per-repo failures used to vanish (continue / empty catch), so a scan that hit the
+    // subrequest limit still looked complete. Count them, cap fetches to a budget, and say so.
+    const budget = parseInt(this.env.SUBREQUEST_BUDGET || "45");
+    let used = 0, failedRepos = 0, unscanned = 0;
+    for (let i = 0; i < repos.length; i++) {
+      const repo = repos[i];
+      if (used >= budget) { unscanned = repos.length - i; break; }
+      used++;
       try {
         const commitsRes = await fetch(
           `https://api.github.com/repos/${org}/${repo.name}/commits?since=${lastCheck}&per_page=50`,
           { headers }
         );
-        if (!commitsRes.ok) continue;
+        if (!commitsRes.ok) { failedRepos++; continue; }
         const commits = await commitsRes.json() as any[];
 
         if (commits.length > 0) {
@@ -425,6 +438,9 @@ export class Brook extends DurableObject<Env> {
 
           // Check for large commits
           for (const commit of commits.slice(0, 5)) {
+            // detail calls are optional: spend budget on them only if every remaining repo still gets its list call
+            if (budget - used <= repos.length - i - 1) break;
+            used++;
             try {
               const detailRes = await fetch(
                 `https://api.github.com/repos/${org}/${repo.name}/commits/${commit.sha}`,
@@ -454,8 +470,14 @@ export class Brook extends DurableObject<Env> {
             repo.name, repo.name, new Date().toISOString(), repo.private ? 1 : 0
           );
         }
-      } catch { /* skip repos that fail */ }
+      } catch { failedRepos++; }
     }
+    if (failedRepos > 0 || unscanned > 0) {
+      newAlerts.push(this.makeAlert("git", "warn",
+        `Repo scan incomplete: ${failedRepos} repo(s) failed, ${unscanned} not scanned (subrequest budget ${budget}) of ${repos.length}`));
+    }
+    this.setMeta("last_scan_failed", String(failedRepos));
+    this.setMeta("last_scan_unscanned", String(unscanned));
 
     // Volume alert
     if (totalNewCommits > parseInt(this.env.ALERT_THRESHOLD_COMMITS || "20")) {
