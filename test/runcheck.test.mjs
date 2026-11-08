@@ -272,6 +272,45 @@ await t("rotating cursor: a repo that always fails does not starve the others", 
   assert.equal(head(ctx, "R1").pending, 0); assert.equal(head(ctx, "R2").pending, 0); assert.equal(head(ctx, "R0").pending, 1);
 });
 
+// ── audit e590c8e fixes ──
+await t("[audit F1] pending repo vanishes from a complete listing: warned by name+SHA, not silent", async () => {
+  const { b, ctx } = await seeded([{ id: "R1", name: "gone", head: "A", target: "B", next: 1, pending: 1 }, { id: "R2", name: "a", head: "A" }]);
+  gh({ repos: [{ id: "R2", name: "a", oid: "A" }] });
+  const r = await b.runCheck("test");
+  assert.ok(msgs(r).includes("gone left the listing before its new commits were reviewed (A → B)"), msgs(r));
+  assert.equal(alerts(ctx).filter(a => a.id === "vanished:R1:B").length, 1);
+});
+await t("[audit F1] pending repo absent from an INCOMPLETE listing: kept pending, no vanish claim, no watermark", async () => {
+  const { b, ctx } = await seeded([{ id: "R1", name: "gone", head: "A", target: "B", next: 1, pending: 1 }]);
+  gh({ repos: [], graphql: () => new Response(JSON.stringify({ errors: [{ message: "x" }] }), { status: 200 }) });
+  const r = await b.runCheck("test");
+  assert.equal(head(ctx, "R1").pending, 1); assert.ok(!msgs(r).includes("left the listing"), msgs(r)); assert.equal(meta(ctx, "last_check_ts"), undefined);
+});
+await t("[audit F2] compare says total_commits 101 but sends 100 and no next link: stays pending, failed, no watermark", async () => {
+  const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }]);
+  gh({ repos: [{ id: "R1", name: "a", oid: "Z" }] });
+  const orig = globalThis.fetch;
+  globalThis.fetch = async (u, i) => String(u).includes("/compare/")
+    ? new Response(JSON.stringify({ status: "ahead", total_commits: 101, commits: Array.from({ length: 100 }, (_, k) => C("t" + k)) }), { status: 200 })
+    : orig(u, i);
+  const r = await b.runCheck("test");
+  assert.equal(head(ctx, "R1").pending, 1); assert.equal(head(ctx, "R1").head_sha, "A");
+  assert.ok(msgs(r).includes("1 failed"), msgs(r)); assert.equal(meta(ctx, "last_check_ts"), undefined);
+});
+await t("[audit F2] compare without total_commits is a failure, not 'done'", async () => {
+  const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }]);
+  gh({ repos: [{ id: "R1", name: "a", oid: "Z" }] });
+  const orig = globalThis.fetch;
+  globalThis.fetch = async (u, i) => String(u).includes("/compare/") ? new Response(JSON.stringify({ status: "ahead", commits: [C("Z")] }), { status: 200 }) : orig(u, i);
+  await b.runCheck("test"); assert.equal(head(ctx, "R1").pending, 1);
+});
+await t("[audit F3] multi-page diverged: the rewrite alert is returned once, not once per page", async () => {
+  const { b } = await seeded([{ id: "R1", name: "a", head: "A" }], env({ SUBREQUEST_BUDGET: "30" }));
+  gh({ repos: [{ id: "R1", name: "a", oid: "Z" }], compare: { "a:A...Z": { status: "diverged", commits: Array.from({ length: 201 }, (_, i) => C("d" + i)) } } });
+  const r = await b.runCheck("test");
+  assert.equal(r.alerts.filter(a => a.id.startsWith("rewrite:")).length, 1);
+});
+
 // ── listing completeness ──
 await t("GraphQL 200 with errors = incomplete, no watermark", async () => {
   const { b, ctx } = await seeded([{ id: "R1", name: "a", head: "A" }]);

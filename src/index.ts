@@ -1380,6 +1380,9 @@ export class Brook extends DurableObject<Env> {
               } else if (body.status === "ahead" || body.status === "diverged") {
                 commits = body.commits; // F1 (v2): diverged still returns BASE..HEAD commits; process them
                 if (body.status === "diverged") rewrite = "history rewritten";
+                // Audit e590c8e F2: "no next page" must agree with total_commits, or the last page is not proof of the end.
+                if (!Number.isInteger(body.total_commits)) fail = true;
+                else if (!hasNext && (page - 1) * 100 + commits.length < body.total_commits) fail = true;
               } else fail = true;
               if (!fail && commits.some((c: any) => typeof c?.sha !== "string")) fail = true;
             }
@@ -1420,11 +1423,22 @@ export class Brook extends DurableObject<Env> {
             row.name, row.target_sha, now(), row.is_private);
         });
         out.newCommits += commits.length;
-        newAlerts.push(...pageAlerts);
+        for (const a of pageAlerts) if (!newAlerts.some(x => x.id === a.id)) newAlerts.push(a); // audit F3: one per id
         if (done && liveHead === row.target_sha) break;
       }
     }
 
+    // Audit e590c8e F1: a pending repo absent from a COMPLETE listing is gone (deleted, transferred, hidden). Its target was
+    // seen but never reviewed: say so once, by name and SHA, then stop tracking it, instead of dropping it silently.
+    if (heads.complete) {
+      for (const row of this.ctx.storage.sql.exec("SELECT repo_id, name, head_sha, target_sha FROM repo_heads WHERE pending = 1").toArray() as any[]) {
+        if (live.has(row.repo_id)) continue;
+        const a = this.fixedAlert(`vanished:${row.repo_id}:${row.target_sha}`, "git", "warn",
+          `${row.name} left the listing before its new commits were reviewed (${String(row.head_sha).slice(0, 7) || "empty"} → ${String(row.target_sha).slice(0, 7)})`);
+        this.tx(() => { this.storeAlertNow(a); this.ctx.storage.sql.exec("UPDATE repo_heads SET pending = 0, target_sha = NULL, next_page = NULL WHERE repo_id = ?", row.repo_id); });
+        newAlerts.push(a);
+      }
+    }
     // Covered = listed repos with nothing pending. Pending = listed repos still to reconcile.
     for (const r of heads.repos) {
       const row = this.ctx.storage.sql.exec("SELECT pending FROM repo_heads WHERE repo_id = ?", r.id).toArray()[0] as any;
