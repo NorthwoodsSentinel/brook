@@ -40,6 +40,7 @@ interface Env {
   ALERT_THRESHOLD_COMMITS: string;
   ALERT_THRESHOLD_FILES: string;
   SUBREQUEST_BUDGET?: string;
+  LISTING_RETRY_BASE_MS?: string; // NOR-259 reopen: backoff base for 502/503/504 on the head listing (tests set 0)
   ALERT_THRESHOLD_REPOS: string;
 }
 
@@ -482,10 +483,11 @@ export class Brook extends DurableObject<Env> {
         `https://raw.githubusercontent.com/${org}/${this.env.FLEET_BRIDGE_REPO}/main/registry/${new Date().toISOString().split('T')[0]}.md`,
         { headers }
       );
-      if (!regRes.ok) {
-        // kintsugi: non-2xx used to pass silently. No file for today is normal (info); anything else is a warn.
-        newAlerts.push(this.makeAlert("fragmentation", regRes.status === 404 ? "info" : "warn",
-          `Registry check got HTTP ${regRes.status}`));
+      // kintsugi: non-2xx used to pass silently; anything other than 404 is still a warn.
+      // NOR-259 reopen (11-11): 404 = no registry file for today, which is the normal state. It used to raise an
+      // info alert every hour into the digest; an expected state is not an alert.
+      if (!regRes.ok && regRes.status !== 404) {
+        newAlerts.push(this.makeAlert("fragmentation", "warn", `Registry check got HTTP ${regRes.status}`));
       }
       if (regRes.ok) {
         const regText = await regRes.text();
@@ -1232,18 +1234,33 @@ export class Brook extends DurableObject<Env> {
     Promise<{ complete: boolean; repos: { id: string; name: string; isPrivate: boolean; oid: string }[]; pages: number; why: string }> {
     const q = `query($org:String!,$after:String){repositoryOwner(login:$org){__typename repositories(first:100,after:$after,ownerAffiliations:[OWNER],orderBy:{field:CREATED_AT,direction:ASC}){pageInfo{hasNextPage endCursor} nodes{id name isPrivate defaultBranchRef{target{oid}}}}}}`;
     const repos: { id: string; name: string; isPrivate: boolean; oid: string }[] = [];
-    let after: string | null = null, pages = 0;
+    // `pages` counts every GraphQL subrequest, retries included, so the caller's budget accounting stays exact.
+    let after: string | null = null, pages = 0, retries = 0;
+    const MAX_RETRIES = 2;
+    const baseMs = Math.max(0, Number(this.env.LISTING_RETRY_BASE_MS ?? "1000") || 0);
     while (pages < Math.max(1, maxPages)) {
       pages++;
       let body: any;
+      // NOR-259 reopen (11-11): GitHub gateway 502/504s on a listing page come and go; one used to page as
+      // "listing incomplete" (critical at 0 repos) and read downstream as "credential dead". Retry the SAME page
+      // (same cursor) with backoff, inside the budget. Anything still failing stays incomplete, as before.
+      const canRetry = () => retries < MAX_RETRIES && pages < Math.max(1, maxPages);
+      const backoff = async () => { const ms = baseMs * 2 ** retries; retries++; if (ms) await new Promise(r => setTimeout(r, ms)); };
       try {
         const res = await fetch("https://api.github.com/graphql", {
           method: "POST", headers: { ...headers, "Content-Type": "application/json" },
           body: JSON.stringify({ query: q, variables: { org, after } }),
         });
-        if (!res.ok) return { complete: false, repos, pages, why: `HTTP ${res.status}` };
+        if (!res.ok) {
+          if ([502, 503, 504].includes(res.status) && canRetry()) { await backoff(); continue; }
+          return { complete: false, repos, pages, why: `HTTP ${res.status}${retries ? ` after ${retries} retr${retries === 1 ? "y" : "ies"}` : ""}` };
+        }
         body = await res.json();
-      } catch (e) { return { complete: false, repos, pages, why: `fetch failed: ${e}` }; }
+      } catch (e) {
+        if (canRetry()) { await backoff(); continue; }
+        return { complete: false, repos, pages, why: `fetch failed: ${e}` };
+      }
+      retries = 0;
       // swarm (Margin, e590c8e): `errors: []` is not an error; a non-empty list is.
       // audit 1e8cb56: anything in `errors` other than absent/null/[] (a string, an object, a non-empty list) is a failure.
       if (body?.errors != null && !(Array.isArray(body.errors) && body.errors.length === 0)) return { complete: false, repos, pages, why: `GraphQL errors` };

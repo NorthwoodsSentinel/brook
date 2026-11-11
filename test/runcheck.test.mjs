@@ -447,6 +447,46 @@ await t("a failed detail check is alert-only: commit still counted, head still a
   assert.equal(head(ctx, "R1").head_sha, "B"); assert.ok(msgs(r).includes("1 commit detail(s) failed"), msgs(r));
 });
 
+// ── NOR-259 reopen (11-11): transient gateway errors on the listing, and the hourly registry 404 ──
+const gqlCount = calls => calls.filter(c => c.endsWith("/graphql")).length;
+await t("[reopen] one 502 on the listing is retried: listing completes, no incomplete alert, watermark advances", async () => {
+  const { b, ctx } = await seeded([], env({ LISTING_RETRY_BASE_MS: "0" }));
+  let n = 0; const calls = gh({ repos: [{ id: "R1", name: "a", oid: "A" }], graphql: () => (++n === 1 ? new Response("bad gateway", { status: 502 }) : null) });
+  const r = await b.runCheck("test");
+  assert.ok(!msgs(r).includes("incomplete") && !msgs(r).includes("INCOMPLETE"), msgs(r));
+  assert.equal(gqlCount(calls), 2); assert.ok(meta(ctx, "last_check_ts"));
+});
+await t("[reopen] a 504 that persists stays incomplete after 2 retries (3 calls), no watermark", async () => {
+  const { b, ctx } = await seeded([], env({ LISTING_RETRY_BASE_MS: "0" }));
+  const calls = gh({ repos: [{ id: "R1", name: "a", oid: "A" }], graphql: () => new Response("timeout", { status: 504 }) });
+  const r = await b.runCheck("test");
+  assert.ok(msgs(r).includes("HTTP 504 after 2 retries"), msgs(r)); assert.equal(gqlCount(calls), 3);
+  assert.equal(meta(ctx, "last_check_ts"), undefined);
+});
+await t("[reopen] a thrown fetch on the listing is retried the same way", async () => {
+  const { b, ctx } = await seeded([], env({ LISTING_RETRY_BASE_MS: "0" }));
+  let n = 0; gh({ repos: [{ id: "R1", name: "a", oid: "A" }], graphql: () => { if (++n === 1) throw new Error("reset"); return null; } });
+  await b.runCheck("test"); assert.ok(meta(ctx, "last_check_ts"));
+});
+await t("[reopen] a non-gateway error (401) is NOT retried", async () => {
+  const { b } = await seeded([], env({ LISTING_RETRY_BASE_MS: "0" }));
+  const calls = gh({ repos: [], graphql: () => new Response("unauthorized", { status: 401 }) });
+  const r = await b.runCheck("test"); assert.equal(gqlCount(calls), 1); assert.ok(msgs(r).includes("HTTP 401"), msgs(r));
+});
+await t("[reopen] retries count against the subrequest budget (budget caps every call)", async () => {
+  const { b } = await seeded([], env({ LISTING_RETRY_BASE_MS: "0", SUBREQUEST_BUDGET: "4" }));
+  const calls = gh({ repos: [{ id: "R1", name: "a", oid: "A" }], graphql: () => new Response("x", { status: 502 }) });
+  const r = await b.runCheck("test");
+  assert.ok(calls.length <= 4, `made ${calls.length} calls on budget 4`); assert.ok(msgs(r).includes("incomplete"), msgs(r));
+});
+await t("[reopen] registry 404 (no file today) raises no alert; a registry 500 still warns", async () => {
+  const { b } = await seeded([]); gh({ repos: [] });
+  const r1 = await b.runCheck("test"); assert.ok(!msgs(r1).includes("Registry check"), msgs(r1));
+  const { b: b2 } = await seeded([]); gh({ repos: [] });
+  const orig = globalThis.fetch; globalThis.fetch = async (u, i) => (new URL(String(u)).host === "raw.githubusercontent.com" ? new Response("x", { status: 500 }) : orig(u, i));
+  const r2 = await b2.runCheck("test"); assert.ok(msgs(r2).includes("Registry check got HTTP 500"), msgs(r2));
+});
+
 for (const l of res) console.log(l);
 const f = res.filter(l => l.startsWith("FAIL")).length;
 console.log(`runcheck: ${res.length - f}/${res.length} passed`);
