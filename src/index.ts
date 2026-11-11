@@ -1246,20 +1246,23 @@ export class Brook extends DurableObject<Env> {
       // (same cursor) with backoff, inside the budget. Anything still failing stays incomplete, as before.
       const canRetry = () => retries < MAX_RETRIES && pages < Math.max(1, maxPages);
       const backoff = async () => { const ms = baseMs * 2 ** retries; retries++; if (ms) await new Promise(r => setTimeout(r, ms)); };
+      let res: Response;
       try {
-        const res = await fetch("https://api.github.com/graphql", {
+        res = await fetch("https://api.github.com/graphql", {
           method: "POST", headers: { ...headers, "Content-Type": "application/json" },
           body: JSON.stringify({ query: q, variables: { org, after } }),
         });
-        if (!res.ok) {
-          if ([502, 503, 504].includes(res.status) && canRetry()) { await backoff(); continue; }
-          return { complete: false, repos, pages, why: `HTTP ${res.status}${retries ? ` after ${retries} retr${retries === 1 ? "y" : "ies"}` : ""}` };
-        }
-        body = await res.json();
       } catch (e) {
         if (canRetry()) { await backoff(); continue; }
         return { complete: false, repos, pages, why: `fetch failed: ${e}` };
       }
+      if (!res.ok) {
+        if ([502, 503, 504].includes(res.status) && canRetry()) { await backoff(); continue; }
+        return { complete: false, repos, pages, why: `HTTP ${res.status}${retries ? ` after ${retries} retr${retries === 1 ? "y" : "ies"}` : ""}` };
+      }
+      // Codex audit 15e307c HIGH: a malformed 200 body is NOT a transient transport error. Fail closed, no retry (F5).
+      try { body = await res.json(); }
+      catch (e) { return { complete: false, repos, pages, why: `unparseable response body: ${e}` }; }
       retries = 0;
       // swarm (Margin, e590c8e): `errors: []` is not an error; a non-empty list is.
       // audit 1e8cb56: anything in `errors` other than absent/null/[] (a string, an object, a non-empty list) is a failure.

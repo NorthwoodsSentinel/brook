@@ -487,6 +487,13 @@ await t("[reopen] registry 404 (no file today) raises no alert; a registry 500 s
   const r2 = await b2.runCheck("test"); assert.ok(msgs(r2).includes("Registry check got HTTP 500"), msgs(r2));
 });
 
+await t("[Codex audit 15e307c HIGH] malformed JSON on a 200 is NOT retried: incomplete, no watermark", async () => {
+  const { b, ctx } = await seeded([], env({ LISTING_RETRY_BASE_MS: "0" }));
+  let n = 0; const calls = gh({ repos: [{ id: "R1", name: "a", oid: "A" }], graphql: () => (++n === 1 ? new Response("{truncated", { status: 200 }) : null) });
+  const r = await b.runCheck("test");
+  assert.equal(gqlCount(calls), 1); assert.ok(msgs(r).includes("incomplete"), msgs(r)); assert.equal(meta(ctx, "last_check_ts"), undefined);
+});
+
 for (const l of res) console.log(l);
 const f = res.filter(l => l.startsWith("FAIL")).length;
 console.log(`runcheck: ${res.length - f}/${res.length} passed`);
