@@ -484,7 +484,7 @@ export class Brook extends DurableObject<Env> {
         { headers }
       );
       // kintsugi: non-2xx used to pass silently; anything other than 404 is still a warn.
-      // NOR-259 reopen (11-11): 404 = no registry file for today, which is the normal state. It used to raise an
+      // kintsugi: NOR-259 reopen (11-11): 404 = no registry file for today, which is the normal state. It used to raise an
       // info alert every hour into the digest; an expected state is not an alert.
       if (!regRes.ok && regRes.status !== 404) {
         newAlerts.push(this.makeAlert("fragmentation", "warn", `Registry check got HTTP ${regRes.status}`));
@@ -1241,7 +1241,7 @@ export class Brook extends DurableObject<Env> {
     while (pages < Math.max(1, maxPages)) {
       pages++;
       let body: any;
-      // NOR-259 reopen (11-11): GitHub gateway 502/504s on a listing page come and go; one used to page as
+      // kintsugi: NOR-259 reopen (11-11): GitHub gateway 502/504s on a listing page come and go; one used to page as
       // "listing incomplete" (critical at 0 repos) and read downstream as "credential dead". Retry the SAME page
       // (same cursor) with backoff, inside the budget. Anything still failing stays incomplete, as before.
       const canRetry = () => retries < MAX_RETRIES && pages < Math.max(1, maxPages);
@@ -1260,7 +1260,7 @@ export class Brook extends DurableObject<Env> {
         if ([502, 503, 504].includes(res.status) && canRetry()) { await backoff(); continue; }
         return { complete: false, repos, pages, why: `HTTP ${res.status}${retries ? ` after ${retries} retr${retries === 1 ? "y" : "ies"}` : ""}` };
       }
-      // Codex audit 15e307c HIGH: a malformed 200 body is NOT a transient transport error. Fail closed, no retry (F5).
+      // kintsugi: Codex audit 15e307c HIGH: a malformed 200 body is NOT a transient transport error. Fail closed, no retry (F5).
       try { body = await res.json(); }
       catch (e) { return { complete: false, repos, pages, why: `unparseable response body: ${e}` }; }
       retries = 0;
