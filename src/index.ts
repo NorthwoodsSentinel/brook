@@ -72,13 +72,15 @@ const BROOK_SCHEMA_CATALOG: Record<string, BrookSchemaEntry> = {
   fleet_telemetry_post: {
     slug: "fleet_telemetry_post",
     endpoint: "POST /fleet-telemetry",
-    description: "Push per-agent session telemetry. Brook tracks active/idle/seen status keyed by agent name.",
+    description:
+      "Push per-agent session telemetry. Brook tracks active/idle/seen status keyed by agent name.",
     auth: "Bearer token",
     body: {
       sessions: {
         type: "array<object>",
         required: true,
-        notes: "Each session: {agent: string, query_count: number, domains: string[] (joined CSV), local: boolean}",
+        notes:
+          "Each session: {agent: string, query_count: number, domains: string[] (joined CSV), local: boolean}",
       },
     },
     notes: [
@@ -89,14 +91,27 @@ const BROOK_SCHEMA_CATALOG: Record<string, BrookSchemaEntry> = {
   checkin_post: {
     slug: "checkin_post",
     endpoint: "POST /checkin",
-    description: "Agent declares itself active and currently working on something.",
+    description:
+      "Agent declares itself active and currently working on something.",
     auth: "Bearer token",
     body: {
       name: { type: "string", required: true, notes: "Agent identifier" },
-      machine: { type: "string", required: false, notes: "Host machine identifier" },
-      working_on: { type: "string", required: false, notes: "Free-text current focus" },
+      machine: {
+        type: "string",
+        required: false,
+        notes: "Host machine identifier",
+      },
+      working_on: {
+        type: "string",
+        required: false,
+        notes: "Free-text current focus",
+      },
       context: { type: "string", required: false, notes: "Additional context" },
-      capabilities: { type: "string", required: false, notes: "Comma-separated capability list" },
+      capabilities: {
+        type: "string",
+        required: false,
+        notes: "Comma-separated capability list",
+      },
     },
   },
   checkout_post: {
@@ -105,7 +120,11 @@ const BROOK_SCHEMA_CATALOG: Record<string, BrookSchemaEntry> = {
     description: "Agent declares it's stepping away or finishing a session.",
     auth: "Bearer token",
     body: {
-      name: { type: "string", required: true, notes: "Agent identifier (same as checkin)" },
+      name: {
+        type: "string",
+        required: true,
+        notes: "Agent identifier (same as checkin)",
+      },
     },
   },
   publish_post: {
@@ -116,7 +135,9 @@ const BROOK_SCHEMA_CATALOG: Record<string, BrookSchemaEntry> = {
     body: {
       agent: { type: "string", required: true, notes: "Publishing agent name" },
     },
-    notes: ["Full body shape varies by event type — additional fields are stored on the event row."],
+    notes: [
+      "Full body shape varies by event type — additional fields are stored on the event row.",
+    ],
   },
   silence_post: {
     slug: "silence_post",
@@ -136,23 +157,29 @@ function brookSchemasResponse(slug?: string): Response {
       endpoint: s.endpoint,
       description: s.description,
     }));
-    return new Response(JSON.stringify({
-      ok: true,
-      data: {
-        schemas: list,
-        doc: "GET /schemas/:slug for full body shape per endpoint",
-      },
-    }), { headers: { "content-type": "application/json" } });
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        data: {
+          schemas: list,
+          doc: "GET /schemas/:slug for full body shape per endpoint",
+        },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
   }
   const entry = BROOK_SCHEMA_CATALOG[slug];
   if (!entry) {
-    return new Response(JSON.stringify({
-      ok: false,
-      error: {
-        code: "NOT_FOUND",
-        message: `No schema for '${slug}'. Available: ${Object.keys(BROOK_SCHEMA_CATALOG).join(", ")}`,
-      },
-    }), { status: 404, headers: { "content-type": "application/json" } });
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `No schema for '${slug}'. Available: ${Object.keys(BROOK_SCHEMA_CATALOG).join(", ")}`,
+        },
+      }),
+      { status: 404, headers: { "content-type": "application/json" } },
+    );
   }
   return new Response(JSON.stringify({ ok: true, data: { schema: entry } }), {
     headers: { "content-type": "application/json" },
@@ -198,19 +225,23 @@ function isRateLimited(ip: string, path: string): boolean {
 function rejectOversizedBody(request: Request): Response | null {
   const cl = request.headers.get("Content-Length");
   if (cl && parseInt(cl, 10) > MAX_BODY_BYTES) {
-    return secureJsonResponse({ error: "Request body too large (64KB max)" }, { status: 413 });
+    return secureJsonResponse(
+      { error: "Request body too large (64KB max)" },
+      { status: 413 },
+    );
   }
   return null;
 }
 
 // "The only way to do great work is to love what you do — and then defend it." — Henry Rollins
 const SECURITY_HEADERS: Record<string, string> = {
-  'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
-  'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
-  'X-Content-Type-Options': 'nosniff',
-  'X-Frame-Options': 'DENY',
-  'Referrer-Policy': 'strict-origin-when-cross-origin',
-  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+  "Content-Security-Policy":
+    "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
 };
 
 function secureResponse(body: string, init?: ResponseInit): Response {
@@ -223,7 +254,7 @@ function secureResponse(body: string, init?: ResponseInit): Response {
 
 function secureJsonResponse(data: unknown, init?: ResponseInit): Response {
   const headers = new Headers(init?.headers);
-  headers.set('Content-Type', 'application/json');
+  headers.set("Content-Type", "application/json");
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
     headers.set(k, v);
   }
@@ -243,29 +274,90 @@ interface Alert {
   read: boolean;
 }
 
-interface RepoState {
+// Shapes of the GitHub API responses this file reads. Only the fields used are typed.
+interface GitHubRepo {
   name: string;
-  lastCommitSha: string;
-  lastChecked: string;
-  isPrivate: boolean;
+  full_name?: string;
+  private?: boolean;
 }
 
-interface RegistryEntry {
-  time: string;
-  agent: string;
-  what: string;
-  where: string;
+interface GitHubCommit {
+  sha: string;
+  commit: { message: string; author: { date: string } };
+}
+
+interface GitHubCommitDetail {
+  stats?: { total: number };
+}
+
+// A parsed JSON request body. Handlers read fields off it as before; the type
+// records that every field is unchecked input.
+type JsonBody = Record<string, unknown>;
+
+// Row shapes of the SQLite tables created in Brook.init().
+type SqlValue = string | number | null;
+
+interface AgentRow {
+  [column: string]: SqlValue;
+  name: string;
   status: string;
+  last_checkin: string | null;
+  last_checkout: string | null;
+  working_on: string | null;
+  machine: string | null;
+  context: string | null;
+  capabilities: string | null;
+}
+
+interface RegistryRow {
+  [column: string]: SqlValue;
+  ts: string;
+  what: string;
+  location: string | null;
+  status: string | null;
+}
+
+interface FleetSessionRow {
+  [column: string]: SqlValue;
+  agent: string;
+  status: string;
+  query_count: number | null;
+  domains: string | null;
+  first_seen: string | null;
+  last_seen: string | null;
+  session_start: string | null;
+  is_local: number | null;
+}
+
+interface RepoRow {
+  [column: string]: SqlValue;
+  name: string;
+  last_checked: string | null;
+  is_private: number | null;
+}
+
+interface CountRow {
+  [column: string]: SqlValue;
+  count: number;
+}
+
+interface MetaRow {
+  [column: string]: SqlValue;
+  value: string;
 }
 
 function esc(s: string): string {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 // ─── Durable Object: Brook ───────────────────────────────────────
 
 export class Brook extends DurableObject<Env> {
-
   async init() {
     // Create tables on first wake
     this.ctx.storage.sql.exec(`
@@ -316,18 +408,34 @@ export class Brook extends DurableObject<Env> {
     `);
     // Fleet telemetry
     try {
-      this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS fleet_sessions (agent TEXT PRIMARY KEY, status TEXT DEFAULT 'offline', query_count INTEGER DEFAULT 0, domains TEXT DEFAULT '', first_seen TEXT, last_seen TEXT, session_start TEXT, is_local INTEGER DEFAULT 0)`);
-    } catch (e) {
+      this.ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS fleet_sessions (agent TEXT PRIMARY KEY, status TEXT DEFAULT 'offline', query_count INTEGER DEFAULT 0, domains TEXT DEFAULT '', first_seen TEXT, last_seen TEXT, session_start TEXT, is_local INTEGER DEFAULT 0)`,
+      );
+    } catch {
       // Table may already exist or have schema mismatch — safe to continue
     }
     // Migrate existing agents table if missing new columns
-    try { this.ctx.storage.sql.exec(`ALTER TABLE agents ADD COLUMN context TEXT DEFAULT ''`); } catch {}
-    try { this.ctx.storage.sql.exec(`ALTER TABLE agents ADD COLUMN capabilities TEXT DEFAULT ''`); } catch {}
+    try {
+      this.ctx.storage.sql.exec(
+        `ALTER TABLE agents ADD COLUMN context TEXT DEFAULT ''`,
+      );
+    } catch {
+      /* column already exists */
+    }
+    try {
+      this.ctx.storage.sql.exec(
+        `ALTER TABLE agents ADD COLUMN capabilities TEXT DEFAULT ''`,
+      );
+    } catch {
+      /* column already exists */
+    }
   }
 
   // ─── Core check loop ──────────────────────────────────────────
 
-  async runCheck(trigger: string): Promise<{ alerts: Alert[]; summary: string }> {
+  async runCheck(
+    trigger: string,
+  ): Promise<{ alerts: Alert[]; summary: string }> {
     await this.init();
     const start = Date.now();
     const newAlerts: Alert[] = [];
@@ -337,57 +445,79 @@ export class Brook extends DurableObject<Env> {
     // ─── Step 1: Git scan ───────────────────────────────────────
 
     const headers: Record<string, string> = {
-      "Accept": "application/vnd.github+json",
+      Accept: "application/vnd.github+json",
       "User-Agent": "brook-overwatch/0.1",
     };
     if (token) headers["Authorization"] = `Bearer ${token}`;
 
-    let repos: any[] = [];
+    let repos: GitHubRepo[] = [];
     try {
       // Try org endpoint first, fall back to user repos filtered by org
-      let res = await fetch(`https://api.github.com/orgs/${org}/repos?per_page=100&sort=updated`, { headers });
+      let res = await fetch(
+        `https://api.github.com/orgs/${org}/repos?per_page=100&sort=updated`,
+        { headers },
+      );
       if (res.ok) {
-        repos = await res.json() as any[];
+        repos = (await res.json()) as GitHubRepo[];
       } else {
         // Classic tokens may need user endpoint
-        res = await fetch(`https://api.github.com/user/repos?per_page=100&sort=updated&type=all`, { headers });
+        res = await fetch(
+          `https://api.github.com/user/repos?per_page=100&sort=updated&type=all`,
+          { headers },
+        );
         if (res.ok) {
-          const allRepos = await res.json() as any[];
-          repos = allRepos.filter((r: any) => r.full_name?.startsWith(`${org}/`));
+          const allRepos = (await res.json()) as GitHubRepo[];
+          repos = allRepos.filter((r) => r.full_name?.startsWith(`${org}/`));
         }
       }
     } catch (e) {
-      newAlerts.push(this.makeAlert("git", "warn", `GitHub API call failed: ${e}`));
+      newAlerts.push(
+        this.makeAlert("git", "warn", `GitHub API call failed: ${e}`),
+      );
     }
 
     // Check for new repos
     const knownRepos = new Set<string>();
-    const cursor = this.ctx.storage.sql.exec("SELECT name FROM repos");
+    const cursor = this.ctx.storage.sql.exec<{ name: string }>(
+      "SELECT name FROM repos",
+    );
     for (const row of cursor) {
       knownRepos.add(row.name as string);
     }
 
-    const newRepos = repos.filter(r => !knownRepos.has(r.name));
+    const newRepos = repos.filter((r) => !knownRepos.has(r.name));
     if (newRepos.length > parseInt(this.env.ALERT_THRESHOLD_REPOS || "2")) {
-      newAlerts.push(this.makeAlert("new_repo", "critical",
-        `${newRepos.length} new repos created: ${newRepos.map((r: any) => r.name).join(", ")}`));
+      newAlerts.push(
+        this.makeAlert(
+          "new_repo",
+          "critical",
+          `${newRepos.length} new repos created: ${newRepos.map((r) => r.name).join(", ")}`,
+        ),
+      );
     } else if (newRepos.length > 0) {
-      newAlerts.push(this.makeAlert("new_repo", "info",
-        `New repo(s): ${newRepos.map((r: any) => r.name).join(", ")}`));
+      newAlerts.push(
+        this.makeAlert(
+          "new_repo",
+          "info",
+          `New repo(s): ${newRepos.map((r) => r.name).join(", ")}`,
+        ),
+      );
     }
 
     // Check each repo for new commits
     let totalNewCommits = 0;
-    const lastCheck = this.getMeta("last_check_ts") || new Date(Date.now() - 3600000).toISOString();
+    const lastCheck =
+      this.getMeta("last_check_ts") ||
+      new Date(Date.now() - 3600000).toISOString();
 
     for (const repo of repos) {
       try {
         const commitsRes = await fetch(
           `https://api.github.com/repos/${org}/${repo.name}/commits?since=${lastCheck}&per_page=50`,
-          { headers }
+          { headers },
         );
         if (!commitsRes.ok) continue;
-        const commits = await commitsRes.json() as any[];
+        const commits = (await commitsRes.json()) as GitHubCommit[];
 
         if (commits.length > 0) {
           totalNewCommits += commits.length;
@@ -397,39 +527,63 @@ export class Brook extends DurableObject<Env> {
             try {
               const detailRes = await fetch(
                 `https://api.github.com/repos/${org}/${repo.name}/commits/${commit.sha}`,
-                { headers }
+                { headers },
               );
               if (detailRes.ok) {
-                const detail = await detailRes.json() as any;
-                if (detail.stats && detail.stats.total > parseInt(this.env.ALERT_THRESHOLD_FILES || "100")) {
-                  newAlerts.push(this.makeAlert("volume", "warn",
-                    `Large commit in ${repo.name}: ${detail.stats.total} changes — "${commit.commit.message.split('\n')[0]}"`));
+                const detail = (await detailRes.json()) as GitHubCommitDetail;
+                if (
+                  detail.stats &&
+                  detail.stats.total >
+                    parseInt(this.env.ALERT_THRESHOLD_FILES || "100")
+                ) {
+                  newAlerts.push(
+                    this.makeAlert(
+                      "volume",
+                      "warn",
+                      `Large commit in ${repo.name}: ${detail.stats.total} changes — "${commit.commit.message.split("\n")[0]}"`,
+                    ),
+                  );
                 }
               }
-            } catch { /* skip detail fetch failures */ }
+            } catch {
+              /* skip detail fetch failures */
+            }
           }
 
           // Update stored state
           this.ctx.storage.sql.exec(
             `INSERT OR REPLACE INTO repos (name, last_commit_sha, last_checked, is_private)
              VALUES (?, ?, ?, ?)`,
-            repo.name, commits[0].sha, new Date().toISOString(), repo.private ? 1 : 0
+            repo.name,
+            commits[0].sha,
+            new Date().toISOString(),
+            repo.private ? 1 : 0,
           );
         } else {
           // No new commits, just update check time
           this.ctx.storage.sql.exec(
             `INSERT OR REPLACE INTO repos (name, last_commit_sha, last_checked, is_private)
              VALUES (?, COALESCE((SELECT last_commit_sha FROM repos WHERE name = ?), ''), ?, ?)`,
-            repo.name, repo.name, new Date().toISOString(), repo.private ? 1 : 0
+            repo.name,
+            repo.name,
+            new Date().toISOString(),
+            repo.private ? 1 : 0,
           );
         }
-      } catch { /* skip repos that fail */ }
+      } catch {
+        /* skip repos that fail */
+      }
     }
 
     // Volume alert
     if (totalNewCommits > parseInt(this.env.ALERT_THRESHOLD_COMMITS || "20")) {
-      newAlerts.push(this.makeAlert("volume", "critical",
-        `High volume: ${totalNewCommits} commits across org since last check`));
+      newAlerts.push(
+        this.makeAlert(
+          "volume",
+          "critical",
+          `High volume: ${totalNewCommits} commits across org since last check`,
+        ),
+      );
     }
 
     // ─── Step 2: Fleet-bridge check ─────────────────────────────
@@ -437,45 +591,63 @@ export class Brook extends DurableObject<Env> {
     try {
       const bridgeRes = await fetch(
         `https://api.github.com/repos/${org}/${this.env.FLEET_BRIDGE_REPO}/commits?per_page=5`,
-        { headers }
+        { headers },
       );
       if (bridgeRes.ok) {
-        const bridgeCommits = await bridgeRes.json() as any[];
+        const bridgeCommits = (await bridgeRes.json()) as GitHubCommit[];
         if (bridgeCommits.length > 0) {
-          const lastBridgeUpdate = new Date(bridgeCommits[0].commit.author.date);
-          const hoursSinceUpdate = (Date.now() - lastBridgeUpdate.getTime()) / (1000 * 60 * 60);
+          const lastBridgeUpdate = new Date(
+            bridgeCommits[0].commit.author.date,
+          );
+          const hoursSinceUpdate =
+            (Date.now() - lastBridgeUpdate.getTime()) / (1000 * 60 * 60);
 
           if (hoursSinceUpdate > 24) {
-            newAlerts.push(this.makeAlert("drift", "warn",
-              `Fleet-bridge has not been updated in ${Math.round(hoursSinceUpdate)} hours. Agents may be going dark.`));
+            newAlerts.push(
+              this.makeAlert(
+                "drift",
+                "warn",
+                `Fleet-bridge has not been updated in ${Math.round(hoursSinceUpdate)} hours. Agents may be going dark.`,
+              ),
+            );
           }
         }
       }
     } catch (e) {
-      newAlerts.push(this.makeAlert("drift", "info", `Could not check fleet-bridge: ${e}`));
+      newAlerts.push(
+        this.makeAlert("drift", "info", `Could not check fleet-bridge: ${e}`),
+      );
     }
 
     // ─── Step 3: Fragmentation check ────────────────────────────
 
     try {
       const regRes = await fetch(
-        `https://raw.githubusercontent.com/${org}/${this.env.FLEET_BRIDGE_REPO}/main/registry/${new Date().toISOString().split('T')[0]}.md`,
-        { headers }
+        `https://raw.githubusercontent.com/${org}/${this.env.FLEET_BRIDGE_REPO}/main/registry/${new Date().toISOString().split("T")[0]}.md`,
+        { headers },
       );
       if (regRes.ok) {
         const regText = await regRes.text();
-        const lines = regText.split('\n').filter(l => l.startsWith('|') && !l.includes('---') && !l.includes('Time'));
+        const lines = regText
+          .split("\n")
+          .filter(
+            (l) =>
+              l.startsWith("|") && !l.includes("---") && !l.includes("Time"),
+          );
 
         // Look for duplicate topics across agents
         const topicAgentMap = new Map<string, Set<string>>();
         for (const line of lines) {
-          const cols = line.split('|').map(c => c.trim()).filter(c => c);
+          const cols = line
+            .split("|")
+            .map((c) => c.trim())
+            .filter((c) => c);
           if (cols.length >= 3) {
             const agent = cols[1]?.toLowerCase();
             const what = cols[2]?.toLowerCase();
             if (agent && what) {
               // Extract keywords
-              const keywords = what.split(/\s+/).filter(w => w.length > 4);
+              const keywords = what.split(/\s+/).filter((w) => w.length > 4);
               for (const kw of keywords) {
                 if (!topicAgentMap.has(kw)) topicAgentMap.set(kw, new Set());
                 topicAgentMap.get(kw)!.add(agent);
@@ -486,13 +658,25 @@ export class Brook extends DurableObject<Env> {
 
         // Flag topics that appear across agents without explicit cross-reference
         for (const [topic, agents] of topicAgentMap) {
-          if (agents.size > 1 && !['approved', 'moser', 'archie', 'ceecee', 'fleet', 'bridge'].includes(topic)) {
+          if (
+            agents.size > 1 &&
+            ![
+              "approved",
+              "moser",
+              "archie",
+              "ceecee",
+              "fleet",
+              "bridge",
+            ].includes(topic)
+          ) {
             // This is signal, not necessarily an alert — log it
-            this.setMeta(`frag_${topic}`, Array.from(agents).join(','));
+            this.setMeta(`frag_${topic}`, Array.from(agents).join(","));
           }
         }
       }
-    } catch { /* registry may not exist yet for today's date */ }
+    } catch {
+      /* registry may not exist yet for today's date */
+    }
 
     // ─── Step 4: Store and sleep ────────────────────────────────
 
@@ -502,7 +686,11 @@ export class Brook extends DurableObject<Env> {
     for (const alert of newAlerts) {
       this.ctx.storage.sql.exec(
         `INSERT OR IGNORE INTO alerts (id, ts, type, severity, message, read) VALUES (?, ?, ?, ?, ?, 0)`,
-        alert.id, alert.ts, alert.type, alert.severity, alert.message
+        alert.id,
+        alert.ts,
+        alert.type,
+        alert.severity,
+        alert.message,
       );
     }
 
@@ -510,18 +698,25 @@ export class Brook extends DurableObject<Env> {
     this.ctx.storage.sql.exec(
       `INSERT INTO checks (ts, trigger, repos_checked, alerts_generated, duration_ms)
        VALUES (?, ?, ?, ?, ?)`,
-      new Date().toISOString(), trigger, repos.length, newAlerts.length, duration
+      new Date().toISOString(),
+      trigger,
+      repos.length,
+      newAlerts.length,
+      duration,
     );
 
     this.setMeta("last_check_ts", new Date().toISOString());
-    this.setMeta("total_checks", String(parseInt(this.getMeta("total_checks") || "0") + 1));
+    this.setMeta(
+      "total_checks",
+      String(parseInt(this.getMeta("total_checks") || "0") + 1),
+    );
 
     const summary = [
       `Brook check complete (${trigger}, ${duration}ms)`,
       `Repos: ${repos.length} checked, ${newRepos.length} new`,
       `Commits: ${totalNewCommits} since last check`,
       `Alerts: ${newAlerts.length} generated`,
-    ].join('\n');
+    ].join("\n");
 
     return { alerts: newAlerts, summary };
   }
@@ -557,8 +752,11 @@ export class Brook extends DurableObject<Env> {
       const token = authHeader.replace("Bearer ", "");
       if (!this.env.BROOK_API_KEY || token !== this.env.BROOK_API_KEY) {
         return secureJsonResponse(
-          { error: "Unauthorized. Bearer token required for private endpoints. Schema discovery at GET /schemas (public)." },
-          { status: 401 }
+          {
+            error:
+              "Unauthorized. Bearer token required for private endpoints. Schema discovery at GET /schemas (public).",
+          },
+          { status: 401 },
         );
       }
     }
@@ -575,15 +773,21 @@ export class Brook extends DurableObject<Env> {
       return this.handleAlerts(url);
     }
     if (path === "/silence" && request.method === "POST") {
-      let body: any;
+      let body: JsonBody;
       try {
-        body = await request.json();
+        body = await request.json<JsonBody>();
       } catch {
-        return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+        return secureJsonResponse(
+          { error: "Invalid JSON body" },
+          { status: 400 },
+        );
       }
       const id = body?.id;
       if (id) {
-        this.ctx.storage.sql.exec("UPDATE alerts SET read = 1 WHERE id = ?", truncate(String(id), FIELD_LIMITS.name));
+        this.ctx.storage.sql.exec(
+          "UPDATE alerts SET read = 1 WHERE id = ?",
+          truncate(String(id), FIELD_LIMITS.name),
+        );
         return secureJsonResponse({ ok: true });
       }
       return secureJsonResponse({ error: "id required" }, { status: 400 });
@@ -615,9 +819,9 @@ export class Brook extends DurableObject<Env> {
       return this.handleFleetTelemetryRead();
     }
     if (path === "/history") {
-      const rows = this.ctx.storage.sql.exec(
-        "SELECT * FROM checks ORDER BY ts DESC LIMIT 24"
-      ).toArray();
+      const rows = this.ctx.storage.sql
+        .exec("SELECT * FROM checks ORDER BY ts DESC LIMIT 24")
+        .toArray();
       return secureJsonResponse(rows);
     }
 
@@ -625,9 +829,20 @@ export class Brook extends DurableObject<Env> {
       name: "Brook — Fleet Overwatch",
       version: "0.1.0",
       public: ["/daemon"],
-      private: ["/status", "/check", "/alerts", "/silence?id=X", "/webhook", "/history", "/fleet", "/fleet-telemetry (GET/POST)", "/checkin (POST)", "/checkout (POST)"],
+      private: [
+        "/status",
+        "/check",
+        "/alerts",
+        "/silence?id=X",
+        "/webhook",
+        "/history",
+        "/fleet",
+        "/fleet-telemetry (GET/POST)",
+        "/checkin (POST)",
+        "/checkout (POST)",
+      ],
       auth: "Bearer token required for private endpoints",
-    });  // "No dress rehearsal, this is our life" — Gord Downie
+    }); // "No dress rehearsal, this is our life" — Gord Downie
   }
 
   // ─── Cron handler ─────────────────────────────────────────────
@@ -639,19 +854,32 @@ export class Brook extends DurableObject<Env> {
   // ─── Fleet agent tracking ──────────────────────────────────────
 
   private async handleCheckin(request: Request): Promise<Response> {
-    let body: any;
+    let body: JsonBody;
     try {
-      body = await request.json();
+      body = await request.json<JsonBody>();
     } catch {
-      return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+      return secureJsonResponse(
+        { error: "Invalid JSON body" },
+        { status: 400 },
+      );
     }
     const name = truncate(String(body.name || ""), FIELD_LIMITS.name);
-    const machine = truncate(String(body.machine || "unknown"), FIELD_LIMITS.machine);
-    const workingOn = truncate(String(body.working_on || ""), FIELD_LIMITS.working_on);
+    const machine = truncate(
+      String(body.machine || "unknown"),
+      FIELD_LIMITS.machine,
+    );
+    const workingOn = truncate(
+      String(body.working_on || ""),
+      FIELD_LIMITS.working_on,
+    );
     const context = truncate(String(body.context || ""), FIELD_LIMITS.context);
-    const capabilities = truncate(String(body.capabilities || ""), FIELD_LIMITS.capabilities);
+    const capabilities = truncate(
+      String(body.capabilities || ""),
+      FIELD_LIMITS.capabilities,
+    );
 
-    if (!name) return secureJsonResponse({ error: "name required" }, { status: 400 });
+    if (!name)
+      return secureJsonResponse({ error: "name required" }, { status: 400 });
 
     this.ctx.storage.sql.exec(
       `INSERT INTO agents (name, status, last_checkin, working_on, machine, context, capabilities)
@@ -663,7 +891,12 @@ export class Brook extends DurableObject<Env> {
          machine = excluded.machine,
          context = CASE WHEN excluded.context != '' THEN excluded.context ELSE agents.context END,
          capabilities = CASE WHEN excluded.capabilities != '' THEN excluded.capabilities ELSE agents.capabilities END`,
-      name, new Date().toISOString(), workingOn, machine, context, capabilities
+      name,
+      new Date().toISOString(),
+      workingOn,
+      machine,
+      context,
+      capabilities,
     );
 
     return secureJsonResponse({ ok: true, agent: name, status: "online" });
@@ -671,17 +904,23 @@ export class Brook extends DurableObject<Env> {
 
   // Agents publish what they built — goes into the shared registry
   private async handlePublish(request: Request): Promise<Response> {
-    let body: any;
+    let body: JsonBody;
     try {
-      body = await request.json();
+      body = await request.json<JsonBody>();
     } catch {
-      return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+      return secureJsonResponse(
+        { error: "Invalid JSON body" },
+        { status: 400 },
+      );
     }
     const agent = truncate(String(body.agent || ""), FIELD_LIMITS.name);
     const items = body.items; // array of { what, location, status }
 
     if (!agent || !items || !Array.isArray(items)) {
-      return secureJsonResponse({ error: "agent and items[] required" }, { status: 400 });
+      return secureJsonResponse(
+        { error: "agent and items[] required" },
+        { status: 400 },
+      );
     }
 
     const ts = new Date().toISOString();
@@ -689,10 +928,11 @@ export class Brook extends DurableObject<Env> {
       this.ctx.storage.sql.exec(
         `INSERT INTO agent_registry (agent, ts, what, location, status)
          VALUES (?, ?, ?, ?, ?)`,
-        agent, ts,
+        agent,
+        ts,
         truncate(String(item.what || ""), FIELD_LIMITS.working_on),
         truncate(String(item.location || ""), FIELD_LIMITS.working_on),
-        truncate(String(item.status || ""), FIELD_LIMITS.machine)
+        truncate(String(item.status || ""), FIELD_LIMITS.machine),
       );
     }
 
@@ -701,23 +941,26 @@ export class Brook extends DurableObject<Env> {
 
   // Query a specific agent's state and registry
   private handleAgentQuery(name: string): Response {
-    const agent = this.ctx.storage.sql.exec(
-      "SELECT * FROM agents WHERE name = ?", name
-    ).toArray();
+    const agent = this.ctx.storage.sql
+      .exec<AgentRow>("SELECT * FROM agents WHERE name = ?", name)
+      .toArray();
 
     if (agent.length === 0) {
       return secureJsonResponse({ error: "Agent not found" }, { status: 404 });
     }
 
-    const registry = this.ctx.storage.sql.exec(
-      "SELECT ts, what, location, status FROM agent_registry WHERE agent = ? ORDER BY ts DESC LIMIT 50",
-      name
-    ).toArray();
+    const registry = this.ctx.storage.sql
+      .exec<RegistryRow>(
+        "SELECT ts, what, location, status FROM agent_registry WHERE agent = ? ORDER BY ts DESC LIMIT 50",
+        name,
+      )
+      .toArray();
 
     const now = Date.now();
-    const a = agent[0] as any;
+    const a = agent[0];
     const lastCheckin = a.last_checkin ? new Date(a.last_checkin).getTime() : 0;
-    const hoursSince = Math.round(((now - lastCheckin) / (1000 * 60 * 60)) * 10) / 10;
+    const hoursSince =
+      Math.round(((now - lastCheckin) / (1000 * 60 * 60)) * 10) / 10;
     let displayStatus = a.status;
     if (a.status === "online" && hoursSince > 2) displayStatus = "stale";
 
@@ -736,37 +979,48 @@ export class Brook extends DurableObject<Env> {
   }
 
   private async handleCheckout(request: Request): Promise<Response> {
-    let body: any;
+    let body: JsonBody;
     try {
-      body = await request.json();
+      body = await request.json<JsonBody>();
     } catch {
-      return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+      return secureJsonResponse(
+        { error: "Invalid JSON body" },
+        { status: 400 },
+      );
     }
     const name = truncate(String(body.name || ""), FIELD_LIMITS.name);
 
-    if (!name) return secureJsonResponse({ error: "name required" }, { status: 400 });
+    if (!name)
+      return secureJsonResponse({ error: "name required" }, { status: 400 });
 
     this.ctx.storage.sql.exec(
       `UPDATE agents SET status = 'offline', last_checkout = ? WHERE name = ?`,
-      new Date().toISOString(), name
+      new Date().toISOString(),
+      name,
     );
 
     return secureJsonResponse({ ok: true, agent: name, status: "offline" });
   }
 
   private handleFleet(): Response {
-    const agents = this.ctx.storage.sql.exec(
-      "SELECT * FROM agents ORDER BY last_checkin DESC"
-    ).toArray();
+    const agents = this.ctx.storage.sql
+      .exec<AgentRow>("SELECT * FROM agents ORDER BY last_checkin DESC")
+      .toArray();
 
     // Mark agents stale if no checkin in 2 hours
     const now = Date.now();
-    const enriched = agents.map((a: any) => {
-      const lastCheckin = a.last_checkin ? new Date(a.last_checkin).getTime() : 0;
+    const enriched = agents.map((a) => {
+      const lastCheckin = a.last_checkin
+        ? new Date(a.last_checkin).getTime()
+        : 0;
       const hoursSince = (now - lastCheckin) / (1000 * 60 * 60);
       let displayStatus = a.status;
       if (a.status === "online" && hoursSince > 2) displayStatus = "stale";
-      return { ...a, displayStatus, hoursSinceCheckin: Math.round(hoursSince * 10) / 10 };
+      return {
+        ...a,
+        displayStatus,
+        hoursSinceCheckin: Math.round(hoursSince * 10) / 10,
+      };
     });
 
     return secureJsonResponse({ agents: enriched });
@@ -775,31 +1029,42 @@ export class Brook extends DurableObject<Env> {
   // ─── Per-agent public daemon page ───────────────────────────────
 
   private handleAgentDaemon(name: string): Response {
-    const agent = this.ctx.storage.sql.exec(
-      "SELECT * FROM agents WHERE name = ?", name
-    ).toArray();
+    const agent = this.ctx.storage.sql
+      .exec<AgentRow>("SELECT * FROM agents WHERE name = ?", name)
+      .toArray();
 
     if (agent.length === 0) {
       return secureResponse("Agent not found", { status: 404 });
     }
 
-    const registry = this.ctx.storage.sql.exec(
-      "SELECT ts, what, location, status FROM agent_registry WHERE agent = ? ORDER BY ts DESC LIMIT 20",
-      name
-    ).toArray();
+    const registry = this.ctx.storage.sql
+      .exec<RegistryRow>(
+        "SELECT ts, what, location, status FROM agent_registry WHERE agent = ? ORDER BY ts DESC LIMIT 20",
+        name,
+      )
+      .toArray();
 
-    const a = agent[0] as any;
+    const a = agent[0];
     const now = Date.now();
     const lastCheckin = a.last_checkin ? new Date(a.last_checkin).getTime() : 0;
-    const hoursSince = Math.round(((now - lastCheckin) / (1000 * 60 * 60)) * 10) / 10;
+    const hoursSince =
+      Math.round(((now - lastCheckin) / (1000 * 60 * 60)) * 10) / 10;
     let displayStatus = a.status;
     if (a.status === "online" && hoursSince > 2) displayStatus = "stale";
 
-    const statusColor = displayStatus === "online" ? "#4a9" : displayStatus === "stale" ? "#ca4" : "#666";
+    const statusColor =
+      displayStatus === "online"
+        ? "#4a9"
+        : displayStatus === "stale"
+          ? "#ca4"
+          : "#666";
 
-    const registryRows = registry.map((r: any) =>
-      `<tr><td class="dim">${esc((r.ts || '').split('T')[0])}</td><td>${esc(r.what || '')}</td><td class="dim">${esc(r.status || '')}</td></tr>`
-    ).join('\n      ');
+    const registryRows = registry
+      .map(
+        (r) =>
+          `<tr><td class="dim">${esc((r.ts || "").split("T")[0])}</td><td>${esc(r.what || "")}</td><td class="dim">${esc(r.status || "")}</td></tr>`,
+      )
+      .join("\n      ");
 
     const html = `<!DOCTYPE html>
 <html lang="en">
@@ -823,18 +1088,22 @@ export class Brook extends DurableObject<Env> {
 </head>
 <body>
   <h1>${esc(a.name)}</h1>
-  <p class="meta">Machine: ${esc(a.machine || 'unknown')} · <span class="status">${esc(displayStatus)}</span> · Last checkin: ${hoursSince}h ago</p>
+  <p class="meta">Machine: ${esc(a.machine || "unknown")} · <span class="status">${esc(displayStatus)}</span> · Last checkin: ${hoursSince}h ago</p>
 
-  ${a.working_on ? `<h2>Currently Working On</h2><p>${esc(a.working_on)}</p>` : ''}
-  ${a.context ? `<h2>Context</h2><p>${esc(a.context)}</p>` : ''}
-  ${a.capabilities ? `<h2>Capabilities</h2><p>${esc(a.capabilities)}</p>` : ''}
+  ${a.working_on ? `<h2>Currently Working On</h2><p>${esc(a.working_on)}</p>` : ""}
+  ${a.context ? `<h2>Context</h2><p>${esc(a.context)}</p>` : ""}
+  ${a.capabilities ? `<h2>Capabilities</h2><p>${esc(a.capabilities)}</p>` : ""}
 
-  ${registry.length > 0 ? `
+  ${
+    registry.length > 0
+      ? `
   <h2>Recently Built</h2>
   <table>
     <tr><th>Date</th><th>What</th><th>Status</th></tr>
     ${registryRows}
-  </table>` : '<h2>Recently Built</h2><p class="dim">No published items yet.</p>'}
+  </table>`
+      : '<h2>Recently Built</h2><p class="dim">No published items yet.</p>'
+  }
 
   <div class="footer">
     <a href="/daemon">← Back to Fleet</a> · Brook v0.1.0
@@ -853,15 +1122,17 @@ export class Brook extends DurableObject<Env> {
     const lastCheck = this.getMeta("last_check_ts") || "never";
     const totalChecks = this.getMeta("total_checks") || "0";
 
-    const repoRows = this.ctx.storage.sql.exec(
-      "SELECT name, last_checked, is_private FROM repos ORDER BY last_checked DESC"
-    ).toArray();
+    const repoRows = this.ctx.storage.sql
+      .exec<RepoRow>(
+        "SELECT name, last_checked, is_private FROM repos ORDER BY last_checked DESC",
+      )
+      .toArray();
 
-    const unreadCount = this.ctx.storage.sql.exec(
-      "SELECT COUNT(*) as count FROM alerts WHERE read = 0"
-    ).toArray();
+    const unreadCount = this.ctx.storage.sql
+      .exec<CountRow>("SELECT COUNT(*) as count FROM alerts WHERE read = 0")
+      .toArray();
 
-    const repos = repoRows.map((r: any) => ({
+    const repos = repoRows.map((r) => ({
       name: r.name,
       private: r.is_private === 1,
       lastChecked: r.last_checked,
@@ -893,72 +1164,105 @@ export class Brook extends DurableObject<Env> {
   <p class="dim">A sleeping guardian for your AI fleet. Wakes hourly. Watches git, fleet-bridge, drift, receipt discipline, pattern integrity. Refuses fabrication. Surfaces divergence. Does not instruct.</p>
 
   <h2>Status</h2>
-  <p><span class="status">Operational</span> · Last check: ${lastCheck} · Total checks: ${totalChecks} · Unread alerts: ${(unreadCount[0] as any)?.count || 0}</p>
+  <p><span class="status">Operational</span> · Last check: ${lastCheck} · Total checks: ${totalChecks} · Unread alerts: ${unreadCount[0]?.count || 0}</p>
 
   <h2>Fleet Agents</h2>
   <div id="agents">${(() => {
-    const agents = this.ctx.storage.sql.exec(
-      "SELECT name, status, machine, working_on, last_checkin FROM agents ORDER BY last_checkin DESC"
-    ).toArray();
-    if (agents.length === 0) return '<p class="dim">No agents have checked in yet.</p>';
-    return '<table><tr><th>Agent</th><th>Status</th><th>Machine</th><th>Working On</th></tr>' +
-      agents.map((a: any) => {
-        const lc = a.last_checkin ? new Date(a.last_checkin).getTime() : 0;
-        const hrs = Math.round(((Date.now() - lc) / (1000 * 60 * 60)) * 10) / 10;
-        let ds = a.status;
-        if (ds === "online" && hrs > 2) ds = "stale";
-        const sc = ds === "online" ? "#4a9" : ds === "stale" ? "#ca4" : "#666";
-        return `<tr><td><a href="/daemon/${encodeURIComponent(a.name)}">${esc(a.name)}</a></td><td style="color:${sc}">${esc(ds)}</td><td class="dim">${esc(a.machine || '')}</td><td class="dim">${esc((a.working_on || '').substring(0, 80))}</td></tr>`;
-      }).join('\n    ') + '</table>';
+    const agents = this.ctx.storage.sql
+      .exec<AgentRow>(
+        "SELECT name, status, machine, working_on, last_checkin FROM agents ORDER BY last_checkin DESC",
+      )
+      .toArray();
+    if (agents.length === 0)
+      return '<p class="dim">No agents have checked in yet.</p>';
+    return (
+      "<table><tr><th>Agent</th><th>Status</th><th>Machine</th><th>Working On</th></tr>" +
+      agents
+        .map((a) => {
+          const lc = a.last_checkin ? new Date(a.last_checkin).getTime() : 0;
+          const hrs =
+            Math.round(((Date.now() - lc) / (1000 * 60 * 60)) * 10) / 10;
+          let ds = a.status;
+          if (ds === "online" && hrs > 2) ds = "stale";
+          const sc =
+            ds === "online" ? "#4a9" : ds === "stale" ? "#ca4" : "#666";
+          return `<tr><td><a href="/daemon/${encodeURIComponent(a.name)}">${esc(a.name)}</a></td><td style="color:${sc}">${esc(ds)}</td><td class="dim">${esc(a.machine || "")}</td><td class="dim">${esc((a.working_on || "").substring(0, 80))}</td></tr>`;
+        })
+        .join("\n    ") +
+      "</table>"
+    );
   })()}</div>
 
   <h2>Fleet Telemetry</h2>
   <div id="fleet-telemetry">${(() => {
-    let ftSessions: any[];
+    let ftSessions: FleetSessionRow[];
     try {
-      ftSessions = this.ctx.storage.sql.exec(
-        "SELECT * FROM fleet_sessions ORDER BY last_seen DESC"
-      ).toArray();
+      ftSessions = this.ctx.storage.sql
+        .exec<FleetSessionRow>(
+          "SELECT * FROM fleet_sessions ORDER BY last_seen DESC",
+        )
+        .toArray();
     } catch {
       return '<p class="dim">Fleet telemetry table initializing...</p>';
     }
-    if (ftSessions.length === 0) return '<p class="dim">No fleet telemetry data yet. Poller will populate this.</p>';
+    if (ftSessions.length === 0)
+      return '<p class="dim">No fleet telemetry data yet. Poller will populate this.</p>';
 
     const now = Date.now();
     const activeNames: string[] = [];
 
-    const rows = ftSessions.map((s: any) => {
-      const lastSeen = s.last_seen ? new Date(s.last_seen).getTime() : 0;
-      const sessionStart = s.session_start ? new Date(s.session_start).getTime() : lastSeen;
-      const durationMin = Math.round((lastSeen - sessionStart) / 60000);
-      const idleMin = Math.round((now - lastSeen) / 60000);
-      let status = s.status;
-      if (status === "active" && idleMin > 10) status = "idle";
-      if (status === "active") activeNames.push(s.agent);
+    const rows = ftSessions
+      .map((s) => {
+        const lastSeen = s.last_seen ? new Date(s.last_seen).getTime() : 0;
+        const sessionStart = s.session_start
+          ? new Date(s.session_start).getTime()
+          : lastSeen;
+        const durationMin = Math.round((lastSeen - sessionStart) / 60000);
+        const idleMin = Math.round((now - lastSeen) / 60000);
+        let status = s.status;
+        if (status === "active" && idleMin > 10) status = "idle";
+        if (status === "active") activeNames.push(s.agent);
 
-      const statusColor = status === "active" ? "#4a9" : status === "idle" ? "#ca4" : "#666";
-      const indicator = status === "active" ? "●" : status === "idle" ? "◐" : "○";
-      const localBadge = s.is_local === 1 ? ' <span style="color:#666;font-size:0.75em">LOCAL</span>' : '';
-      const durationStr = status === "active" ? `${durationMin}m active` : `idle ${idleMin}m`;
+        const statusColor =
+          status === "active" ? "#4a9" : status === "idle" ? "#ca4" : "#666";
+        const indicator =
+          status === "active" ? "●" : status === "idle" ? "◐" : "○";
+        const localBadge =
+          s.is_local === 1
+            ? ' <span style="color:#666;font-size:0.75em">LOCAL</span>'
+            : "";
+        const durationStr =
+          status === "active" ? `${durationMin}m active` : `idle ${idleMin}m`;
 
-      return `<tr>
+        return `<tr>
         <td><span style="color:${statusColor}">${indicator}</span> ${esc(s.agent)}${localBadge}</td>
         <td style="color:${statusColor}">${esc(status)}</td>
         <td class="dim">${durationStr}</td>
         <td class="dim">${s.query_count || 0} queries</td>
       </tr>`;
-    }).join('\n      ');
+      })
+      .join("\n      ");
 
     // Cognitive mode
     let mode = "idle";
-    if (activeNames.includes("Gemini") || activeNames.includes("Mirror")) mode = "generative";
+    if (activeNames.includes("Gemini") || activeNames.includes("Mirror"))
+      mode = "generative";
     if (activeNames.includes("Leroy") || activeNames.includes("Leroy-API")) {
-      mode = (activeNames.includes("Gemini") || activeNames.includes("Mirror")) ? "split-screen ◆" : "analytical";
+      mode =
+        activeNames.includes("Gemini") || activeNames.includes("Mirror")
+          ? "split-screen ◆"
+          : "analytical";
     }
     if (activeNames.includes("CeeCee")) {
       mode = activeNames.includes("Leroy") ? "split-screen ◆" : "build";
     }
-    const modeColor = mode.includes("split") ? "#c4a35a" : mode === "generative" ? "#4a9" : mode === "analytical" ? "#69b" : "#666";
+    const modeColor = mode.includes("split")
+      ? "#c4a35a"
+      : mode === "generative"
+        ? "#4a9"
+        : mode === "analytical"
+          ? "#69b"
+          : "#666";
 
     return `<p style="margin-bottom:12px">Cognitive Mode: <span style="color:${modeColor};font-weight:bold">${mode.toUpperCase()}</span></p>
     <table>
@@ -970,11 +1274,15 @@ export class Brook extends DurableObject<Env> {
   <h2>Monitored Repositories (${repos.length})</h2>
   <table>
     <tr><th>Repo</th><th>Visibility</th><th>Last Checked</th></tr>
-    ${repos.map((r: any) => `<tr>
+    ${repos
+      .map(
+        (r) => `<tr>
       <td>${esc(r.name)}</td>
-      <td class="${r.private ? 'private' : 'public'}">${r.private ? 'private' : 'public'}</td>
-      <td class="dim">${esc(r.lastChecked || 'never')}</td>
-    </tr>`).join('\n    ')}
+      <td class="${r.private ? "private" : "public"}">${r.private ? "private" : "public"}</td>
+      <td class="dim">${esc(r.lastChecked || "never")}</td>
+    </tr>`,
+      )
+      .join("\n    ")}
   </table>
 
   <h2>What Brook Watches</h2>
@@ -1008,16 +1316,22 @@ export class Brook extends DurableObject<Env> {
   // ─── Fleet Telemetry ──────────────────────────────────────────
 
   private async handleFleetTelemetry(request: Request): Promise<Response> {
-    let body: any;
+    let body: JsonBody;
     try {
-      body = await request.json();
+      body = await request.json<JsonBody>();
     } catch {
-      return secureJsonResponse({ error: "Invalid JSON body" }, { status: 400 });
+      return secureJsonResponse(
+        { error: "Invalid JSON body" },
+        { status: 400 },
+      );
     }
 
     const sessions = body?.sessions;
     if (!sessions || !Array.isArray(sessions)) {
-      return secureJsonResponse({ error: "sessions[] required" }, { status: 400 });
+      return secureJsonResponse(
+        { error: "sessions[] required" },
+        { status: 400 },
+      );
     }
 
     const now = new Date().toISOString();
@@ -1028,18 +1342,23 @@ export class Brook extends DurableObject<Env> {
       if (!agent) continue;
 
       const queryCount = Math.min(Number(s.query_count) || 0, 999999);
-      const domains = truncate(String(Array.isArray(s.domains) ? s.domains.join(",") : ""), FIELD_LIMITS.working_on);
+      const domains = truncate(
+        String(Array.isArray(s.domains) ? s.domains.join(",") : ""),
+        FIELD_LIMITS.working_on,
+      );
       const isLocal = s.local ? 1 : 0;
 
       // Check if there's an existing session
-      const existing = this.ctx.storage.sql.exec(
-        "SELECT session_start, status, first_seen FROM fleet_sessions WHERE agent = ?", agent
-      ).toArray();
+      const existing = this.ctx.storage.sql
+        .exec<FleetSessionRow>(
+          "SELECT session_start, status, first_seen FROM fleet_sessions WHERE agent = ?",
+          agent,
+        )
+        .toArray();
 
       const hasExisting = existing.length > 0;
-      const wasActive = hasExisting && (existing[0] as any).status === "active";
-      const sessionStart = wasActive ? (existing[0] as any).session_start : now;
-      const firstSeen = hasExisting ? (existing[0] as any).first_seen : now;
+      const wasActive = hasExisting && existing[0].status === "active";
+      const sessionStart = wasActive ? existing[0].session_start : now;
 
       if (hasExisting) {
         this.ctx.storage.sql.exec(
@@ -1051,30 +1370,44 @@ export class Brook extends DurableObject<Env> {
             session_start = ?,
             is_local = ?
            WHERE agent = ?`,
-          queryCount, domains, now, sessionStart, isLocal, agent
+          queryCount,
+          domains,
+          now,
+          sessionStart,
+          isLocal,
+          agent,
         );
       } else {
         this.ctx.storage.sql.exec(
           `INSERT INTO fleet_sessions (agent, status, query_count, domains, first_seen, last_seen, session_start, is_local)
            VALUES (?, 'active', ?, ?, ?, ?, ?, ?)`,
-          agent, queryCount, domains, now, now, now, isLocal
+          agent,
+          queryCount,
+          domains,
+          now,
+          now,
+          now,
+          isLocal,
         );
       }
     }
 
     // Mark sessions idle if not updated in this batch
-    const activeAgents = sessions.map((s: any) => String(s.agent || ""));
-    const allSessions = this.ctx.storage.sql.exec(
-      "SELECT agent, last_seen FROM fleet_sessions WHERE status = 'active'"
-    ).toArray();
+    const activeAgents = sessions.map((s) => String(s.agent || ""));
+    const allSessions = this.ctx.storage.sql
+      .exec<FleetSessionRow>(
+        "SELECT agent, last_seen FROM fleet_sessions WHERE status = 'active'",
+      )
+      .toArray();
 
     for (const row of allSessions) {
-      const a = row as any;
+      const a = row;
       if (!activeAgents.includes(a.agent)) {
-        const lastSeen = new Date(a.last_seen).getTime();
+        const lastSeen = new Date(a.last_seen as string).getTime();
         if (Date.now() - lastSeen > IDLE_THRESHOLD_MS) {
           this.ctx.storage.sql.exec(
-            "UPDATE fleet_sessions SET status = 'idle' WHERE agent = ?", a.agent
+            "UPDATE fleet_sessions SET status = 'idle' WHERE agent = ?",
+            a.agent,
           );
         }
       }
@@ -1084,20 +1417,29 @@ export class Brook extends DurableObject<Env> {
   }
 
   private handleFleetTelemetryRead(): Response {
-    let sessions: any[];
+    let sessions: FleetSessionRow[];
     try {
-      sessions = this.ctx.storage.sql.exec(
-        "SELECT * FROM fleet_sessions ORDER BY last_seen DESC"
-      ).toArray();
+      sessions = this.ctx.storage.sql
+        .exec<FleetSessionRow>(
+          "SELECT * FROM fleet_sessions ORDER BY last_seen DESC",
+        )
+        .toArray();
     } catch {
-      return secureJsonResponse({ sessions: [], cognitive_mode: "idle", active_count: 0, error: "table_initializing" });
+      return secureJsonResponse({
+        sessions: [],
+        cognitive_mode: "idle",
+        active_count: 0,
+        error: "table_initializing",
+      });
     }
 
     // Compute durations and cognitive mode
     const now = Date.now();
-    const enriched = sessions.map((s: any) => {
+    const enriched = sessions.map((s) => {
       const lastSeen = s.last_seen ? new Date(s.last_seen).getTime() : 0;
-      const sessionStart = s.session_start ? new Date(s.session_start).getTime() : lastSeen;
+      const sessionStart = s.session_start
+        ? new Date(s.session_start).getTime()
+        : lastSeen;
       const durationMin = Math.round((lastSeen - sessionStart) / 60000);
       const idleMin = Math.round((now - lastSeen) / 60000);
 
@@ -1119,15 +1461,17 @@ export class Brook extends DurableObject<Env> {
     });
 
     // Determine cognitive mode based on active sessions
-    const active = enriched.filter((s: any) => s.status === "active");
-    const activeNames = active.map((s: any) => s.agent);
+    const active = enriched.filter((s) => s.status === "active");
+    const activeNames = active.map((s) => s.agent);
     let cognitiveMode = "idle";
     if (activeNames.includes("Gemini") || activeNames.includes("Mirror")) {
       cognitiveMode = "generative";
     }
     if (activeNames.includes("Leroy") || activeNames.includes("Leroy-API")) {
-      cognitiveMode = activeNames.includes("Gemini") || activeNames.includes("Mirror")
-        ? "split-screen" : "analytical";
+      cognitiveMode =
+        activeNames.includes("Gemini") || activeNames.includes("Mirror")
+          ? "split-screen"
+          : "analytical";
     }
     if (activeNames.includes("CeeCee")) {
       cognitiveMode = activeNames.includes("Leroy") ? "split-screen" : "build";
@@ -1147,24 +1491,24 @@ export class Brook extends DurableObject<Env> {
     const lastCheck = this.getMeta("last_check_ts") || "never";
     const totalChecks = this.getMeta("total_checks") || "0";
 
-    const unreadAlerts = this.ctx.storage.sql.exec(
-      "SELECT COUNT(*) as count FROM alerts WHERE read = 0"
-    ).toArray();
+    const unreadAlerts = this.ctx.storage.sql
+      .exec<CountRow>("SELECT COUNT(*) as count FROM alerts WHERE read = 0")
+      .toArray();
 
-    const repoCount = this.ctx.storage.sql.exec(
-      "SELECT COUNT(*) as count FROM repos"
-    ).toArray();
+    const repoCount = this.ctx.storage.sql
+      .exec<CountRow>("SELECT COUNT(*) as count FROM repos")
+      .toArray();
 
-    const recentAlerts = this.ctx.storage.sql.exec(
-      "SELECT * FROM alerts WHERE read = 0 ORDER BY ts DESC LIMIT 5"
-    ).toArray();
+    const recentAlerts = this.ctx.storage.sql
+      .exec("SELECT * FROM alerts WHERE read = 0 ORDER BY ts DESC LIMIT 5")
+      .toArray();
 
     return secureJsonResponse({
       status: "awake",
       lastCheck,
       totalChecks: parseInt(totalChecks),
-      knownRepos: (repoCount[0] as any)?.count || 0,
-      unreadAlerts: (unreadAlerts[0] as any)?.count || 0,
+      knownRepos: repoCount[0]?.count || 0,
+      unreadAlerts: unreadAlerts[0]?.count || 0,
       recentAlerts,
     });
   }
@@ -1172,13 +1516,17 @@ export class Brook extends DurableObject<Env> {
   private handleAlerts(url: URL): Response {
     const unreadOnly = url.searchParams.get("unread") !== "false";
     const where = unreadOnly ? "WHERE read = 0" : "";
-    const rows = this.ctx.storage.sql.exec(
-      `SELECT * FROM alerts ${where} ORDER BY ts DESC LIMIT 50`
-    ).toArray();
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT * FROM alerts ${where} ORDER BY ts DESC LIMIT 50`)
+      .toArray();
     return secureJsonResponse(rows);
   }
 
-  private makeAlert(type: Alert["type"], severity: Alert["severity"], message: string): Alert {
+  private makeAlert(
+    type: Alert["type"],
+    severity: Alert["severity"],
+    message: string,
+  ): Alert {
     return {
       id: `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       ts: new Date().toISOString(),
@@ -1190,16 +1538,17 @@ export class Brook extends DurableObject<Env> {
   }
 
   private getMeta(key: string): string | null {
-    const rows = this.ctx.storage.sql.exec(
-      "SELECT value FROM meta WHERE key = ?", key
-    ).toArray();
-    return rows.length > 0 ? (rows[0] as any).value : null;
+    const rows = this.ctx.storage.sql
+      .exec<MetaRow>("SELECT value FROM meta WHERE key = ?", key)
+      .toArray();
+    return rows.length > 0 ? rows[0].value : null;
   }
 
   private setMeta(key: string, value: string) {
     this.ctx.storage.sql.exec(
       "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-      key, value
+      key,
+      value,
     );
   }
 }
@@ -1212,9 +1561,15 @@ export default {
     const ip = request.headers.get("CF-Connecting-IP") || "unknown";
 
     // Rate limit on authenticated endpoints only
-    if (!PUBLIC_PATHS.has(url.pathname) && !url.pathname.startsWith("/daemon/")) {
+    if (
+      !PUBLIC_PATHS.has(url.pathname) &&
+      !url.pathname.startsWith("/daemon/")
+    ) {
       if (isRateLimited(ip, url.pathname)) {
-        return secureJsonResponse({ error: "Rate limited. Try again later." }, { status: 429 });
+        return secureJsonResponse(
+          { error: "Rate limited. Try again later." },
+          { status: 429 },
+        );
       }
     }
 
