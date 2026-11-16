@@ -1,0 +1,31 @@
+# CI: runs on pull requests the same checks `npm run local:gate` runs locally
+# (format check, lint, typecheck, tests with the per-file coverage gate). It never
+# deploys and holds no secrets. Steps call the individual scripts rather than
+# `local:gate`, so each check reports on its own line.
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # Hung-job guard, not a flake remedy. The local gate takes under a minute; raise
+    # this only after measuring a real CI run.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run coverage
