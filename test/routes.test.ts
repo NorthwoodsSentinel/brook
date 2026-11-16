@@ -110,7 +110,7 @@ describe("agents", () => {
       method: "POST",
       body: {
         name: "n".repeat(80),
-        machine: "lares",
+        machine: "host-a",
         working_on: "w",
         context: "ctx",
         capabilities: "cap",
@@ -155,14 +155,14 @@ describe("agents", () => {
 
   it("checks an agent out", async () => {
     const { brook, sql } = makeBrook();
-    await call(brook, "/checkin", { method: "POST", body: { name: "margin" } });
+    await call(brook, "/checkin", { method: "POST", body: { name: "scout" } });
     const res = await call(brook, "/checkout", {
       method: "POST",
-      body: { name: "margin" },
+      body: { name: "scout" },
     });
     expect(await res.json()).toEqual({
       ok: true,
-      agent: "margin",
+      agent: "scout",
       status: "offline",
     });
     const row = sql
@@ -184,13 +184,13 @@ describe("agents", () => {
     const res = await call(brook, "/publish", {
       method: "POST",
       body: {
-        agent: "margin",
-        items: [{ what: "vault", location: "lares", status: "done" }, {}],
+        agent: "scout",
+        items: [{ what: "vault", location: "host-a", status: "done" }, {}],
       },
     });
     expect(await res.json()).toEqual({
       ok: true,
-      agent: "margin",
+      agent: "scout",
       published: 2,
     });
     expect(
@@ -200,8 +200,8 @@ describe("agents", () => {
         )
         .toArray(),
     ).toEqual([
-      { agent: "margin", what: "vault", location: "lares", status: "done" },
-      { agent: "margin", what: "", location: "", status: "" },
+      { agent: "scout", what: "vault", location: "host-a", status: "done" },
+      { agent: "scout", what: "", location: "", status: "" },
     ]);
   });
 
@@ -225,7 +225,7 @@ describe("agents", () => {
     const { brook, sql } = makeBrook();
     await brook.init();
     sql.exec(
-      "INSERT INTO agents (name, status, last_checkin, machine) VALUES ('old', 'online', ?, 'lares')",
+      "INSERT INTO agents (name, status, last_checkin, machine) VALUES ('old', 'online', ?, 'host-a')",
       hoursAgo(5),
     );
     sql.exec(
@@ -245,7 +245,7 @@ describe("agents", () => {
     expect(old).toMatchObject({
       name: "old",
       status: "stale",
-      machine: "lares",
+      machine: "host-a",
       hoursSinceCheckin: 5,
     });
     expect(old.built).toEqual([expect.objectContaining({ what: "thing" })]);
@@ -598,7 +598,7 @@ describe("daemon pages", () => {
       "INSERT INTO alerts (id, ts, type, severity, message) VALUES ('x', 't', 'git', 'warn', 'm')",
     );
     sql.exec(
-      "INSERT INTO agents (name, status, last_checkin, machine, working_on) VALUES ('<b>', 'online', ?, 'lares', ?)",
+      "INSERT INTO agents (name, status, last_checkin, machine, working_on) VALUES ('<b>', 'online', ?, 'host-a', ?)",
       hoursAgo(0.1),
       "w".repeat(100),
     );
@@ -684,21 +684,21 @@ describe("daemon pages", () => {
     const { brook, sql } = makeBrook();
     await brook.init();
     sql.exec(
-      "INSERT INTO agents (name, status, last_checkin, machine, working_on, context, capabilities) VALUES ('margin', 'online', ?, 'lares', 'w<1>', 'c', 'k')",
+      "INSERT INTO agents (name, status, last_checkin, machine, working_on, context, capabilities) VALUES ('scout', 'online', ?, 'host-a', 'w<1>', 'c', 'k')",
       hoursAgo(1),
     );
     sql.exec(
-      "INSERT INTO agent_registry (agent, ts, what, status) VALUES ('margin', '2026-11-15T01:00:00Z', 'vault', 'done')",
+      "INSERT INTO agent_registry (agent, ts, what, status) VALUES ('scout', '2026-11-15T01:00:00Z', 'vault', 'done')",
     );
     sql.exec(
-      "INSERT INTO agent_registry (agent, ts, what, location, status) VALUES ('margin', '', '', '', NULL)",
+      "INSERT INTO agent_registry (agent, ts, what, location, status) VALUES ('scout', '', '', '', NULL)",
     );
-    const res = await call(brook, "/daemon/margin", { auth: null });
+    const res = await call(brook, "/daemon/scout", { auth: null });
     expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
     const html = await res.text();
-    expect(html).toContain("<title>margin — Fleet Agent</title>");
+    expect(html).toContain("<title>scout — Fleet Agent</title>");
     expect(html).toContain(
-      'Machine: lares · <span class="status">online</span> · Last checkin: 1h ago',
+      'Machine: host-a · <span class="status">online</span> · Last checkin: 1h ago',
     );
     expect(html).toContain(".status { color: #4a9;");
     expect(html).toContain("<h2>Currently Working On</h2><p>w&lt;1&gt;</p>");

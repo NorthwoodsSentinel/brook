@@ -355,10 +355,10 @@ describe("runCheck: fragmentation signal", () => {
   const registry = [
     "| Time | Agent | What | Where |",
     "|---|---|---|---|",
-    "| 09:00 | Margin | substrate vault restore | lares |",
+    "| 09:00 | Scout | substrate vault restore | host-a |",
     "| 10:00 | CeeCee | substrate vault audit | mac |",
     "| 11:00 | CeeCee | fleet bridge approved | mac |",
-    "| 11:30 | Margin | fleet bridge approved | lares |",
+    "| 11:30 | Scout | fleet bridge approved | host-a |",
     "| short |",
     "not a table row",
   ].join("\n");
@@ -383,8 +383,8 @@ describe("runCheck: fragmentation signal", () => {
     // "fleet", "bridge" and "approved" are shared too but sit on the stoplist; words of
     // four letters or fewer are never keywords.
     expect(frag).toEqual([
-      { key: "frag_substrate", value: "margin,ceecee" },
-      { key: "frag_vault", value: "margin,ceecee" },
+      { key: "frag_substrate", value: "scout,ceecee" },
+      { key: "frag_vault", value: "scout,ceecee" },
     ]);
   });
 

@@ -99,7 +99,7 @@ describe("worker.fetch", () => {
         200,
       );
       expect(
-        (await worker.fetch(req("/daemon/margin", "10.0.0.5"), env)).status,
+        (await worker.fetch(req("/daemon/scout", "10.0.0.5"), env)).status,
       ).toBe(200);
     }
   });
