@@ -8,6 +8,6 @@ in the trailer and this ledger only. The ledger is append-only.
 A row never claims a review before one exists. Review status names the reviewer, the verdict
 and the reviewed SHA. Security repairs describe the class of fix, never how to exploit the break.
 
-| Date | What broke | How it was mended | Mended by / reviewed by | Gold line |
-|---|---|---|---|---|
+| Date       | What broke                                                                        | How it was mended                                                    | Mended by / reviewed by                                                                                 | Gold line                                                                                            |
+| ---------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | 2026-10-31 | An unused dependency carried twelve vulnerable packages into production installs. | Removed it; refreshed wrangler; declared Node 22 (0c317e3, a7e8246). | CeeCee / Codex audit of 0c317e3: fail, 1 MEDIUM non-security, fixed in a7e8246; no re-audit (stop rule) | what was never called still came to the table — / we cleared the empty chair, and the room breathes. |

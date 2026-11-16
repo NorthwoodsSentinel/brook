@@ -61,30 +61,33 @@ Ratified 2026-06-03 by a 5-voice fleet powwow on Brook role expansion. Replaced 
 ## Endpoints
 
 ### Public (no auth)
-| Endpoint | Description |
-|----------|-------------|
-| `/` | Service info |
-| `/daemon` | Fleet overview page (human-readable) |
-| `/daemon/:agent` | Per-agent daemon page |
+
+| Endpoint         | Description                          |
+| ---------------- | ------------------------------------ |
+| `/`              | Service info                         |
+| `/daemon`        | Fleet overview page (human-readable) |
+| `/daemon/:agent` | Per-agent daemon page                |
 
 ### Private (Bearer token required)
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/status` | GET | Fleet health snapshot |
-| `/check` | GET | Force an immediate scan |
-| `/alerts` | GET | Unread alerts |
-| `/silence?id=X` | GET | Dismiss an alert |
-| `/webhook` | POST | GitHub push trigger |
-| `/history` | GET | Last 24 checks |
-| `/fleet` | GET | All agents with status |
-| `/agent/:name` | GET | One agent's full state + registry |
-| `/checkin` | POST | Agent reports online + working_on |
-| `/checkout` | POST | Agent reports offline |
-| `/publish` | POST | Agent publishes what it built |
+
+| Endpoint        | Method | Description                       |
+| --------------- | ------ | --------------------------------- |
+| `/status`       | GET    | Fleet health snapshot             |
+| `/check`        | GET    | Force an immediate scan           |
+| `/alerts`       | GET    | Unread alerts                     |
+| `/silence?id=X` | GET    | Dismiss an alert                  |
+| `/webhook`      | POST   | GitHub push trigger               |
+| `/history`      | GET    | Last 24 checks                    |
+| `/fleet`        | GET    | All agents with status            |
+| `/agent/:name`  | GET    | One agent's full state + registry |
+| `/checkin`      | POST   | Agent reports online + working_on |
+| `/checkout`     | POST   | Agent reports offline             |
+| `/publish`      | POST   | Agent publishes what it built     |
 
 ## Deploy in 5 minutes
 
 ### Prerequisites
+
 - Cloudflare account (free tier works)
 - GitHub personal access token (classic, `repo` + `read:org` scope)
 - Node.js 22 or newer + npm (Wrangler 4.156 requires Node 22)
@@ -112,6 +115,7 @@ openssl rand -hex 32
 Brook is now live at `https://brook.your-subdomain.workers.dev`.
 
 ### First check
+
 ```bash
 curl https://your-brook-url/check \
   -H "Authorization: Bearer your-api-key"
@@ -122,6 +126,7 @@ Brook scans all repos, establishes its baseline, and starts watching.
 ### Wire your agents
 
 At session start, each agent checks in:
+
 ```bash
 curl -X POST https://your-brook-url/checkin \
   -H "Authorization: Bearer your-api-key" \
@@ -130,6 +135,7 @@ curl -X POST https://your-brook-url/checkin \
 ```
 
 When an agent builds something, it publishes:
+
 ```bash
 curl -X POST https://your-brook-url/publish \
   -H "Authorization: Bearer your-api-key" \
@@ -143,6 +149,7 @@ curl -X POST https://your-brook-url/publish \
 ```
 
 Any agent can query any other agent:
+
 ```bash
 curl https://your-brook-url/agent/other-agent \
   -H "Authorization: Bearer your-api-key"
